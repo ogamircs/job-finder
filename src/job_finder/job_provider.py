@@ -145,6 +145,19 @@ def _best_apply_option(options: list[dict[str, Any]]) -> str:
     return ""
 
 
+def _first_related_link(raw_job: dict[str, Any]) -> str:
+    related_links = raw_job.get("related_links") or []
+    if not isinstance(related_links, list):
+        return ""
+    for item in related_links:
+        if not isinstance(item, dict):
+            continue
+        link = str(item.get("link") or "").strip()
+        if link:
+            return link
+    return ""
+
+
 def _iter_strings(value: Any) -> list[str]:
     if value is None:
         return []
@@ -195,7 +208,7 @@ def parse_serpapi_job(raw_job: dict[str, Any]) -> JobPosting:
     schedule_type = str(detected_extensions.get("schedule_type") or "").strip()
     apply_url = _best_apply_option(apply_options)
     if not apply_url:
-        apply_url = str(raw_job.get("related_links", [{}])[0].get("link") or "").strip()
+        apply_url = _first_related_link(raw_job)
 
     return JobPosting(
         provider="serpapi_google_jobs",

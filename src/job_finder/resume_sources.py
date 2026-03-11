@@ -200,18 +200,19 @@ def _parse_period_dates(value: Any) -> tuple[date | None, date | None]:
     if not cleaned:
         return (None, None)
 
-    parts = re.split(r"\s*[-–]\s*", cleaned, maxsplit=1)
-    if len(parts) != 2:
-        parsed = _parse_partial_date(cleaned)
-        return (parsed, None)
+    for separator in (" - ", " – ", " — "):
+        if separator not in cleaned:
+            continue
+        start_text, end_text = cleaned.split(separator, 1)
+        start = _parse_partial_date(start_text)
+        end_value = end_text.strip().casefold()
+        if end_value in {"present", "current", "now"}:
+            end = date.today()
+        else:
+            end = _parse_partial_date(end_text)
+        return (start, end)
 
-    start = _parse_partial_date(parts[0])
-    end_text = parts[1].strip().casefold()
-    if end_text in {"present", "current", "now"}:
-        end = date.today()
-    else:
-        end = _parse_partial_date(parts[1])
-    return (start, end)
+    return (_parse_partial_date(cleaned), None)
 
 
 def _months_between(start: date, end: date) -> int:

@@ -3,6 +3,7 @@ import json
 
 from job_finder.models import ResumeOption
 from job_finder.resume_sources import (
+    _compute_years_experience,
     build_rxresume_resume_url,
     build_rxresume_resumes_url,
     candidate_profile_response_schema,
@@ -244,6 +245,18 @@ def test_list_rxresume_resumes_supports_bare_list_payload():
         ResumeOption(id="resume-1", label="ML Resume"),
         ResumeOption(id="resume-2", label="Backend Resume"),
     ]
+
+
+def test_compute_years_experience_handles_iso_date_ranges_without_overcounting():
+    years = _compute_years_experience(
+        [
+            {
+                "period": "2021-01-01 - 2022-01-01",
+            }
+        ]
+    )
+
+    assert years == 1.0
 
 
 def test_load_candidate_profile_from_pdf_uses_structured_output():

@@ -104,6 +104,24 @@ def test_parse_serpapi_job_extracts_pay_range_when_available():
     assert job.pay_range == "$145K-$180K a year"
 
 
+def test_parse_serpapi_job_handles_empty_related_links():
+    raw_job = {
+        "job_id": "job-789",
+        "title": "ML Engineer",
+        "company_name": "Example Labs",
+        "location": "Remote",
+        "description": "Ranking systems.",
+        "via": "via Example",
+        "apply_options": [],
+        "related_links": [],
+    }
+
+    job = parse_serpapi_job(raw_job)
+
+    assert job.apply_url == ""
+    assert job.share_url == ""
+
+
 def test_serpapi_provider_search_sends_remote_query_and_location():
     client = FakeHttpClient({"jobs_results": []})
     provider = SerpApiGoogleJobsProvider(api_key="serp-key", http_client=client)
