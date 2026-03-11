@@ -6,9 +6,10 @@ import gradio as gr
 import pandas as pd
 from openai import OpenAI
 
+from .application_documents import ApplicationArtifactsService
 from .job_provider import SerpApiGoogleJobsProvider
 from .matching import build_search_queries, find_job_matches
-from .models import CandidateProfile, ResumeOption, SearchRequest, SearchRunResult
+from .models import CandidateProfile, ResumeOption, ScoredJobMatch, SearchRequest, SearchRunResult
 from .resume_sources import (
     DEFAULT_RXRESUME_RESUMES_URL,
     ensure_candidate_profile_has_signal,
@@ -17,6 +18,8 @@ from .resume_sources import (
     load_candidate_profile_from_rxresume,
 )
 from .workspace import LocalWorkspace
+
+DEFAULT_OPENAI_MODEL = "gpt-4o"
 
 APP_CSS = """
 #search-header {
@@ -50,9 +53,26 @@ APP_CSS = """
 """
 
 
-def _rows_from_matches(matches: list[Any]) -> list[dict[str, Any]]:
+def _artifact_status_lookup(artifacts_state: dict[str, Any] | None) -> dict[int, str]:
+    lookup: dict[int, str] = {}
+    for key, artifact in (artifacts_state or {}).items():
+        try:
+            index = int(key)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(artifact, dict):
+            lookup[index] = str(artifact.get("status") or "Ready").strip() or "Ready"
+    return lookup
+
+
+def _rows_from_matches(
+    matches: list[Any],
+    *,
+    artifacts_state: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for match in matches:
+    artifact_status = _artifact_status_lookup(artifacts_state)
+    for index, match in enumerate(matches):
         rows.append(
             {
                 "score": match.score_10,
@@ -62,6 +82,7 @@ def _rows_from_matches(matches: list[Any]) -> list[dict[str, Any]]:
                 "pay_range": match.job.pay_range,
                 "via": match.job.via,
                 "apply_url": match.job.apply_url,
+                "custom_resume": artifact_status.get(index, ""),
                 "rationale": match.rationale,
             }
         )
@@ -119,7 +140,17 @@ def _search_terms_text_for_profile(profile: CandidateProfile) -> str:
 
 def _empty_results_frame() -> pd.DataFrame:
     return pd.DataFrame(
-        columns=["score", "title", "company", "location", "pay_range", "via", "apply_url", "rationale"]
+        columns=[
+            "score",
+            "title",
+            "company",
+            "location",
+            "pay_range",
+            "via",
+            "apply_url",
+            "custom_resume",
+            "rationale",
+        ]
     )
 
 
@@ -133,6 +164,7 @@ class JobMatchService:
         provider_factory=None,
         matcher=find_job_matches,
         workspace: LocalWorkspace | None = None,
+        application_artifacts_service: ApplicationArtifactsService | None = None,
     ) -> None:
         self.pdf_loader = pdf_loader
         self.rxresume_options_loader = rxresume_options_loader
@@ -140,12 +172,16 @@ class JobMatchService:
         self.provider_factory = provider_factory or (lambda api_key: SerpApiGoogleJobsProvider(api_key=api_key))
         self.matcher = matcher
         self.workspace = workspace or LocalWorkspace()
+        self.application_artifacts_service = application_artifacts_service or ApplicationArtifactsService()
 
     def _resolve_secret(self, env_var: str, value: str = "") -> str:
         return self.workspace.resolve_value(env_var, value)
 
     def _resolve_rxresume_base_url(self, value: str = "") -> str:
         return self.workspace.resolve_value("RX_RESUME_API_URL", value) or DEFAULT_RXRESUME_RESUMES_URL
+
+    def _resolve_openai_model(self, value: str = "") -> str:
+        return self.workspace.resolve_value("OPENAI_MODEL", value) or DEFAULT_OPENAI_MODEL
 
     def load_rxresume_options(self, base_url: str, api_key: str) -> list[ResumeOption]:
         resolved_base_url = self._resolve_rxresume_base_url(base_url)
@@ -164,6 +200,7 @@ class JobMatchService:
         rxresume_api_key: str,
         rxresume_resume_id: str,
         openai_api_key: str,
+        openai_model: str = "",
         client: Any | None = None,
     ) -> CandidateProfile:
         source = source_type.strip().lower()
@@ -171,10 +208,12 @@ class JobMatchService:
             if not pdf_bytes:
                 raise ValueError("Upload or select a PDF resume before searching.")
             resolved_openai_key = self._resolve_secret("OPENAI_API_KEY", openai_api_key)
+            resolved_openai_model = self._resolve_openai_model(openai_model)
             profile = self.pdf_loader(
                 pdf_bytes,
                 resolved_openai_key,
                 filename=pdf_filename or "resume.pdf",
+                model=resolved_openai_model,
                 client=client,
             )
             return ensure_candidate_profile_has_signal(
@@ -211,6 +250,7 @@ class JobMatchService:
         rxresume_api_key: str,
         rxresume_resume_id: str,
         openai_api_key: str,
+        openai_model: str = "",
     ) -> dict[str, Any]:
         resolved_openai_key = self._resolve_secret("OPENAI_API_KEY", openai_api_key)
         if source_type.strip().lower() == "pdf" and not resolved_openai_key:
@@ -225,6 +265,7 @@ class JobMatchService:
             rxresume_api_key=rxresume_api_key,
             rxresume_resume_id=rxresume_resume_id,
             openai_api_key=resolved_openai_key,
+            openai_model=openai_model,
             client=openai_client,
         )
         return {
@@ -249,10 +290,12 @@ class JobMatchService:
         include_remote: bool,
         search_terms_text: str = "",
         candidate_profile: CandidateProfile | dict[str, Any] | None = None,
+        openai_model: str = "",
     ) -> SearchRunResult:
         source = source_type.strip().lower()
         resolved_openai_key = self._resolve_secret("OPENAI_API_KEY", openai_api_key)
         resolved_serpapi_key = self._resolve_secret("SERPAPI_API_KEY", serpapi_api_key)
+        resolved_openai_model = self._resolve_openai_model(openai_model)
         if not resolved_openai_key:
             raise ValueError("Provide an OpenAI API key during setup or in .env.")
         if not resolved_serpapi_key:
@@ -273,6 +316,7 @@ class JobMatchService:
                 rxresume_api_key=rxresume_api_key,
                 rxresume_resume_id=rxresume_resume_id,
                 openai_api_key=resolved_openai_key,
+                openai_model=resolved_openai_model,
                 client=openai_client,
             )
 
@@ -290,6 +334,7 @@ class JobMatchService:
             provider,
             openai_key=resolved_openai_key,
             openai_client=openai_client,
+            model=resolved_openai_model,
         )
 
         status = (
@@ -303,6 +348,48 @@ class JobMatchService:
             matches=matches,
             status=status,
         )
+
+    def generate_custom_resume(
+        self,
+        *,
+        source_type: str,
+        rxresume_base_url: str,
+        rxresume_api_key: str,
+        rxresume_resume_id: str,
+        candidate_profile: CandidateProfile | dict[str, Any],
+        match: ScoredJobMatch | dict[str, Any],
+        openai_api_key: str,
+        openai_model: str = "",
+    ) -> dict[str, str]:
+        source = source_type.strip().lower()
+        if source != "rxresume":
+            raise ValueError("Custom resume generation is only available for Reactive Resume sources.")
+
+        resolved_openai_key = self._resolve_secret("OPENAI_API_KEY", openai_api_key)
+        resolved_openai_model = self._resolve_openai_model(openai_model)
+        resolved_base_url = self._resolve_rxresume_base_url(rxresume_base_url)
+        resolved_api_key = self._resolve_secret("RX_RESUME_API_KEY", rxresume_api_key)
+        if not resolved_openai_key:
+            raise ValueError("Provide an OpenAI API key during setup or in .env.")
+        if not resolved_api_key:
+            raise ValueError("Provide a Reactive Resume API key during setup or in .env.")
+        if not rxresume_resume_id.strip():
+            raise ValueError("Select a Reactive Resume entry before generating a custom resume.")
+
+        artifacts = self.application_artifacts_service.generate_application_artifacts(
+            rxresume_base_url=resolved_base_url,
+            rxresume_api_key=resolved_api_key,
+            base_resume_id=rxresume_resume_id.strip(),
+            scored_job=ScoredJobMatch.model_validate(match),
+            openai_api_key=resolved_openai_key,
+            openai_model=resolved_openai_model,
+            candidate_profile=candidate_profile,
+        )
+        return {
+            "status": f"Custom resume and cover letter generated for {artifacts.company}.",
+            "resume_pdf_path": artifacts.pdf_path,
+            "cover_letter_path": artifacts.cover_letter_path,
+        }
 
 
 class AppController:
@@ -327,6 +414,7 @@ class AppController:
         values = self.workspace.load_env_values()
         return {
             "openai_api_key": values.get("OPENAI_API_KEY", ""),
+            "openai_model": values.get("OPENAI_MODEL", "") or DEFAULT_OPENAI_MODEL,
             "serpapi_api_key": values.get("SERPAPI_API_KEY", ""),
             "rxresume_api_key": values.get("RX_RESUME_API_KEY", ""),
             "rxresume_api_url": values.get("RX_RESUME_API_URL", "") or DEFAULT_RXRESUME_RESUMES_URL,
@@ -336,6 +424,7 @@ class AppController:
         self,
         *,
         openai_api_key: str,
+        openai_model: str,
         serpapi_api_key: str,
         rxresume_api_key: str,
         rxresume_api_url: str,
@@ -359,6 +448,7 @@ class AppController:
         self.workspace.save_env_values(
             {
                 "OPENAI_API_KEY": openai_api_key,
+                "OPENAI_MODEL": openai_model or DEFAULT_OPENAI_MODEL,
                 "SERPAPI_API_KEY": serpapi_api_key,
                 "RX_RESUME_API_KEY": rxresume_api_key,
                 "RX_RESUME_API_URL": rxresume_api_url or DEFAULT_RXRESUME_RESUMES_URL,
@@ -377,6 +467,7 @@ class AppController:
         self,
         *,
         openai_api_key: str,
+        openai_model: str,
         serpapi_api_key: str,
         rxresume_api_key: str,
         rxresume_api_url: str,
@@ -389,6 +480,7 @@ class AppController:
         merged = self.workspace.save_env_values(
             {
                 "OPENAI_API_KEY": openai_api_key,
+                "OPENAI_MODEL": openai_model or DEFAULT_OPENAI_MODEL,
                 "SERPAPI_API_KEY": serpapi_api_key,
                 "RX_RESUME_API_KEY": rxresume_api_key,
                 "RX_RESUME_API_URL": rxresume_api_url or DEFAULT_RXRESUME_RESUMES_URL,
@@ -397,6 +489,7 @@ class AppController:
         return {
             "status": "Settings saved.",
             "openai_api_key": merged.get("OPENAI_API_KEY", ""),
+            "openai_model": merged.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL),
             "serpapi_api_key": merged.get("SERPAPI_API_KEY", ""),
             "rxresume_api_key": merged.get("RX_RESUME_API_KEY", ""),
             "rxresume_api_url": merged.get("RX_RESUME_API_URL", DEFAULT_RXRESUME_RESUMES_URL),
@@ -419,6 +512,7 @@ class AppController:
         rxresume_api_key: str,
         rxresume_resume_id: str,
         openai_api_key: str,
+        openai_model: str = "",
     ) -> dict[str, Any]:
         try:
             result = self.service.preview_profile(
@@ -429,6 +523,7 @@ class AppController:
                 rxresume_api_key=rxresume_api_key,
                 rxresume_resume_id=rxresume_resume_id,
                 openai_api_key=openai_api_key,
+                openai_model=openai_model,
             )
         except Exception as exc:
             return {
@@ -473,6 +568,7 @@ class AppController:
         include_remote: bool,
         search_terms_text: str = "",
         candidate_profile: dict[str, Any] | None = None,
+        openai_model: str = "",
     ) -> dict[str, Any]:
         source = source_type.strip().lower()
         if source == "rxresume" and not rxresume_resume_id.strip():
@@ -500,6 +596,7 @@ class AppController:
                 include_remote=include_remote,
                 search_terms_text=search_terms_text,
                 candidate_profile=candidate_profile,
+                openai_model=openai_model,
             )
         except Exception as exc:
             return {
@@ -531,8 +628,41 @@ class AppController:
             "search_terms_text": search_terms_text or (_search_terms_text_for_profile(profile) if profile else ""),
             "candidate_profile": profile.model_dump() if profile else candidate_profile,
             "rows": rows,
+            "matches_state": [
+                ScoredJobMatch.model_validate(match).model_dump() if isinstance(match, dict) else match.model_dump()
+                for match in matches
+            ],
             "results_markdown": _results_markdown(matches),
         }
+
+    def generate_custom_resume(
+        self,
+        *,
+        source_type: str,
+        rxresume_base_url: str,
+        rxresume_api_key: str,
+        rxresume_resume_id: str,
+        candidate_profile: dict[str, Any] | None,
+        match: dict[str, Any] | None,
+        openai_api_key: str,
+        openai_model: str = "",
+    ) -> dict[str, str]:
+        if candidate_profile is None or match is None:
+            return {"status": "Select a job result before generating a custom resume."}
+
+        try:
+            return self.service.generate_custom_resume(
+                source_type=source_type,
+                rxresume_base_url=rxresume_base_url,
+                rxresume_api_key=rxresume_api_key,
+                rxresume_resume_id=rxresume_resume_id,
+                candidate_profile=candidate_profile,
+                match=match,
+                openai_api_key=openai_api_key,
+                openai_model=openai_model,
+            )
+        except Exception as exc:
+            return {"status": str(exc)}
 
 
 def build_app(
@@ -569,6 +699,17 @@ def build_app(
         if source == "rxresume":
             return f"rxresume:{(rxresume_resume_id or '').strip()}"
         return source
+
+    def matches_from_state(matches_state: list[dict[str, Any]] | None) -> list[ScoredJobMatch]:
+        return [ScoredJobMatch.model_validate(match) for match in (matches_state or [])]
+
+    def results_frame_from_state(
+        matches_state: list[dict[str, Any]] | None,
+        artifacts_state: dict[str, Any] | None = None,
+    ) -> pd.DataFrame:
+        return pd.DataFrame(
+            _rows_from_matches(matches_from_state(matches_state), artifacts_state=artifacts_state)
+        )
 
     def toggle_search_source(source_type: str) -> tuple[dict[str, Any], dict[str, Any]]:
         source = source_type.strip().lower()
@@ -633,6 +774,7 @@ def build_app(
 
     def save_setup_ui(
         openai_api_key: str,
+        openai_model: str,
         serpapi_api_key: str,
         rxresume_api_key: str,
         rxresume_api_url: str,
@@ -651,10 +793,12 @@ def build_app(
         str,
         str,
         str,
+        str,
     ]:
         try:
             result = controller.complete_setup(
                 openai_api_key=openai_api_key,
+                openai_model=openai_model,
                 serpapi_api_key=serpapi_api_key,
                 rxresume_api_key=rxresume_api_key,
                 rxresume_api_url=rxresume_api_url,
@@ -672,6 +816,7 @@ def build_app(
                 gr.update(),
                 gr.update(),
                 openai_api_key,
+                openai_model or DEFAULT_OPENAI_MODEL,
                 serpapi_api_key,
                 rxresume_api_key,
                 rxresume_api_url or controller.default_rxresume_api_url(),
@@ -689,6 +834,7 @@ def build_app(
             gr.update(visible=selected_source == "pdf"),
             gr.update(visible=selected_source == "rxresume"),
             settings_after_save["openai_api_key"],
+            settings_after_save["openai_model"],
             settings_after_save["serpapi_api_key"],
             settings_after_save["rxresume_api_key"],
             settings_after_save["rxresume_api_url"],
@@ -696,13 +842,15 @@ def build_app(
 
     def save_settings_ui(
         openai_api_key: str,
+        openai_model: str,
         serpapi_api_key: str,
         rxresume_api_key: str,
         rxresume_api_url: str,
-    ) -> tuple[str, str, str, str, str, str]:
+    ) -> tuple[str, str, str, str, str, str, str]:
         try:
             result = controller.save_settings(
                 openai_api_key=openai_api_key,
+                openai_model=openai_model,
                 serpapi_api_key=serpapi_api_key,
                 rxresume_api_key=rxresume_api_key,
                 rxresume_api_url=rxresume_api_url,
@@ -711,6 +859,7 @@ def build_app(
             return (
                 str(exc),
                 openai_api_key,
+                openai_model or DEFAULT_OPENAI_MODEL,
                 serpapi_api_key,
                 rxresume_api_key,
                 rxresume_api_url or controller.default_rxresume_api_url(),
@@ -720,6 +869,7 @@ def build_app(
         return (
             result["status"],
             result["openai_api_key"],
+            result["openai_model"],
             result["serpapi_api_key"],
             result["rxresume_api_key"],
             result["rxresume_api_url"],
@@ -744,11 +894,130 @@ def build_app(
             "",
         )
 
+    def reset_custom_resume_ui() -> tuple[
+        None,
+        dict[str, Any],
+        str,
+        str,
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, Any],
+    ]:
+        return (
+            None,
+            {},
+            "",
+            "Select a job row to create a custom resume and cover letter.",
+            gr.update(interactive=False),
+            gr.update(value=None, visible=False),
+            gr.update(value=None, visible=False),
+        )
+
+    def select_job_result_ui(
+        source_type: str,
+        matches_state: list[dict[str, Any]] | None,
+        artifacts_state: dict[str, Any] | None,
+        evt: gr.SelectData,
+    ) -> tuple[int | None, str, str, dict[str, Any], dict[str, Any], dict[str, Any]]:
+        matches = matches_from_state(matches_state)
+        row_index = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
+        if not isinstance(row_index, int) or row_index < 0 or row_index >= len(matches):
+            return (
+                None,
+                "",
+                "Select a job row to create a custom resume and cover letter.",
+                gr.update(interactive=False),
+                gr.update(value=None, visible=False),
+                gr.update(value=None, visible=False),
+            )
+
+        match = matches[row_index]
+        selected_markdown = f"**Selected job:** {match.job.title} at {match.job.company}"
+        artifact = (artifacts_state or {}).get(str(row_index), {})
+        resume_path = str(artifact.get("resume_pdf_path") or "").strip()
+        cover_letter_path = str(artifact.get("cover_letter_path") or "").strip()
+
+        if source_type.strip().lower() != "rxresume":
+            return (
+                row_index,
+                selected_markdown,
+                "Custom resume generation is only available when the active resume source is Reactive Resume.",
+                gr.update(interactive=False),
+                gr.update(value=resume_path or None, visible=bool(resume_path)),
+                gr.update(value=cover_letter_path or None, visible=bool(cover_letter_path)),
+            )
+
+        status_text = (
+            str(artifact.get("status") or "").strip()
+            or f"Ready to generate a custom resume for {match.job.company}."
+        )
+        return (
+            row_index,
+            selected_markdown,
+            status_text,
+            gr.update(interactive=True),
+            gr.update(value=resume_path or None, visible=bool(resume_path)),
+            gr.update(value=cover_letter_path or None, visible=bool(cover_letter_path)),
+        )
+
+    def create_custom_resume_ui(
+        source_type: str,
+        rxresume_base_url: str,
+        rxresume_resume_id: str,
+        candidate_profile: dict[str, Any] | None,
+        matches_state: list[dict[str, Any]] | None,
+        selected_result_index: int | None,
+        artifacts_state: dict[str, Any] | None,
+        openai_model: str,
+    ) -> tuple[dict[str, Any], pd.DataFrame, str, dict[str, Any], dict[str, Any], str]:
+        matches = matches_from_state(matches_state)
+        if selected_result_index is None or selected_result_index < 0 or selected_result_index >= len(matches):
+            return (
+                artifacts_state or {},
+                results_frame_from_state(matches_state, artifacts_state),
+                "Select a job row before generating a custom resume.",
+                gr.update(value=None, visible=False),
+                gr.update(value=None, visible=False),
+                "",
+            )
+
+        result = controller.generate_custom_resume(
+            source_type=source_type,
+            rxresume_base_url=rxresume_base_url,
+            rxresume_api_key="",
+            rxresume_resume_id=rxresume_resume_id or "",
+            candidate_profile=candidate_profile,
+            match=(matches_state or [])[selected_result_index],
+            openai_api_key="",
+            openai_model=openai_model,
+        )
+
+        updated_artifacts = dict(artifacts_state or {})
+        if result.get("resume_pdf_path") and result.get("cover_letter_path"):
+            updated_artifacts[str(selected_result_index)] = result
+
+        selected_markdown = (
+            f"**Selected job:** {matches[selected_result_index].job.title} "
+            f"at {matches[selected_result_index].job.company}"
+        )
+        return (
+            updated_artifacts,
+            results_frame_from_state(matches_state, updated_artifacts),
+            result.get("status", ""),
+            gr.update(value=result.get("resume_pdf_path") or None, visible=bool(result.get("resume_pdf_path"))),
+            gr.update(
+                value=result.get("cover_letter_path") or None,
+                visible=bool(result.get("cover_letter_path")),
+            ),
+            selected_markdown,
+        )
+
     def preview_resume_ui(
         source_type: str,
         saved_resume_name: str | None,
         rxresume_base_url: str,
         rxresume_resume_id: str,
+        openai_model: str,
     ) -> tuple[str, str, str, str, dict[str, Any] | None, dict[str, Any], str]:
         pdf_bytes: bytes | None = None
         pdf_filename = ""
@@ -764,6 +1033,7 @@ def build_app(
             rxresume_api_key="",
             rxresume_resume_id=rxresume_resume_id or "",
             openai_api_key="",
+            openai_model=openai_model,
         )
         current_token = ""
         if result["candidate_profile"] is not None:
@@ -788,7 +1058,25 @@ def build_app(
         include_remote: bool,
         candidate_profile: dict[str, Any] | None,
         analysis_token: str,
-    ) -> tuple[str, str, str, str, dict[str, Any] | None, pd.DataFrame, str, dict[str, Any], str]:
+        openai_model: str,
+    ) -> tuple[
+        str,
+        str,
+        str,
+        str,
+        dict[str, Any] | None,
+        pd.DataFrame,
+        str,
+        dict[str, Any],
+        str,
+        list[dict[str, Any]],
+        None,
+        dict[str, Any],
+        str,
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, Any],
+    ]:
         current_token = current_resume_token(source_type, saved_resume_name, rxresume_resume_id)
         if candidate_profile is None or not analysis_token or analysis_token != current_token:
             return (
@@ -801,6 +1089,13 @@ def build_app(
                 "",
                 gr.update(interactive=False),
                 "",
+                [],
+                None,
+                {},
+                "",
+                gr.update(interactive=False),
+                gr.update(value=None, visible=False),
+                gr.update(value=None, visible=False),
             )
 
         pdf_bytes: bytes | None = None
@@ -821,6 +1116,7 @@ def build_app(
             include_remote=include_remote,
             search_terms_text=search_terms_text,
             candidate_profile=candidate_profile,
+            openai_model=openai_model,
         )
         frame = pd.DataFrame(result["rows"])
         return (
@@ -833,6 +1129,13 @@ def build_app(
             result["results_markdown"],
             gr.update(interactive=result["candidate_profile"] is not None),
             current_token,
+            result.get("matches_state") or [],
+            None,
+            {},
+            "",
+            gr.update(interactive=False),
+            gr.update(value=None, visible=False),
+            gr.update(value=None, visible=False),
         )
 
     with gr.Blocks(title="Resume to Jobs Finder", css=APP_CSS) as demo:
@@ -847,6 +1150,12 @@ def build_app(
         with gr.Group(visible=controller.setup_required()) as setup_group:
             gr.Markdown("## Setup")
             setup_openai_api_key = gr.Textbox(label="OpenAI API key", type="password")
+            setup_openai_model = gr.Textbox(
+                label="Backend model",
+                value=settings_values["openai_model"],
+                placeholder="gpt-5",
+                info="Examples: gpt-5, gpt-5.4, gpt-4o",
+            )
             setup_serpapi_api_key = gr.Textbox(label="SerpApi key", type="password")
             setup_rxresume_api_key = gr.Textbox(label="Reactive Resume API key (Optional)", type="password")
             setup_rxresume_api_url = gr.Textbox(
@@ -877,6 +1186,12 @@ def build_app(
                     label="OpenAI API key",
                     type="password",
                     value=settings_values["openai_api_key"],
+                )
+                settings_openai_model = gr.Textbox(
+                    label="Backend model",
+                    value=settings_values["openai_model"],
+                    placeholder="gpt-5",
+                    info="Examples: gpt-5, gpt-5.4, gpt-4o",
                 )
                 settings_serpapi_api_key = gr.Textbox(
                     label="SerpApi key",
@@ -940,18 +1255,41 @@ def build_app(
             profile_markdown = gr.Markdown()
             candidate_profile_state = gr.State(value=None)
             analysis_token_state = gr.State(value="")
+            matches_state = gr.State(value=[])
+            selected_result_index_state = gr.State(value=None)
+            generated_artifacts_state = gr.State(value={})
             results_table = gr.Dataframe(
                 value=_empty_results_frame(),
-                headers=["score", "title", "company", "location", "pay_range", "via", "apply_url", "rationale"],
+                headers=[
+                    "score",
+                    "title",
+                    "company",
+                    "location",
+                    "pay_range",
+                    "via",
+                    "apply_url",
+                    "custom_resume",
+                    "rationale",
+                ],
                 interactive=False,
                 wrap=False,
                 row_count=10,
                 max_height=720,
                 show_fullscreen_button=True,
-                column_widths=[80, 300, 220, 220, 180, 180, 320, 420],
+                column_widths=[80, 300, 220, 220, 180, 180, 320, 160, 420],
                 elem_id="job-results-table",
             )
             results_markdown = gr.Markdown()
+            selected_job_markdown = gr.Markdown()
+            create_custom_resume_button = gr.Button(
+                "Create custom resume and cover letter",
+                variant="secondary",
+                interactive=False,
+            )
+            custom_resume_status = gr.Markdown("Select a job row to create a custom resume and cover letter.")
+            with gr.Row():
+                resume_pdf_download = gr.File(label="Tailored resume PDF", visible=False)
+                cover_letter_download = gr.File(label="Cover letter", visible=False)
 
         setup_source_type.change(
             toggle_setup_source,
@@ -962,6 +1300,7 @@ def build_app(
             save_setup_ui,
             inputs=[
                 setup_openai_api_key,
+                setup_openai_model,
                 setup_serpapi_api_key,
                 setup_rxresume_api_key,
                 setup_rxresume_api_url,
@@ -978,6 +1317,7 @@ def build_app(
                 pdf_group,
                 rxresume_group,
                 settings_openai_api_key,
+                settings_openai_model,
                 settings_serpapi_api_key,
                 settings_rxresume_api_key,
                 settings_rxresume_api_url,
@@ -994,6 +1334,7 @@ def build_app(
             save_settings_ui,
             inputs=[
                 settings_openai_api_key,
+                settings_openai_model,
                 settings_serpapi_api_key,
                 settings_rxresume_api_key,
                 settings_rxresume_api_url,
@@ -1001,6 +1342,7 @@ def build_app(
             outputs=[
                 settings_status,
                 settings_openai_api_key,
+                settings_openai_model,
                 settings_serpapi_api_key,
                 settings_rxresume_api_key,
                 settings_rxresume_api_url,
@@ -1028,6 +1370,19 @@ def build_app(
             ],
             queue=False,
         )
+        source_type.change(
+            reset_custom_resume_ui,
+            outputs=[
+                selected_result_index_state,
+                generated_artifacts_state,
+                selected_job_markdown,
+                custom_resume_status,
+                create_custom_resume_button,
+                resume_pdf_download,
+                cover_letter_download,
+            ],
+            queue=False,
+        )
         uploaded_pdf.change(
             store_uploaded_pdf_ui,
             inputs=[uploaded_pdf],
@@ -1042,6 +1397,19 @@ def build_app(
                 results_markdown,
                 find_jobs_button,
                 analysis_token_state,
+            ],
+            queue=False,
+        )
+        uploaded_pdf.change(
+            reset_custom_resume_ui,
+            outputs=[
+                selected_result_index_state,
+                generated_artifacts_state,
+                selected_job_markdown,
+                custom_resume_status,
+                create_custom_resume_button,
+                resume_pdf_download,
+                cover_letter_download,
             ],
             queue=False,
         )
@@ -1066,6 +1434,19 @@ def build_app(
             ],
             queue=False,
         )
+        saved_pdf_name.change(
+            reset_custom_resume_ui,
+            outputs=[
+                selected_result_index_state,
+                generated_artifacts_state,
+                selected_job_markdown,
+                custom_resume_status,
+                create_custom_resume_button,
+                resume_pdf_download,
+                cover_letter_download,
+            ],
+            queue=False,
+        )
         load_resumes_button.click(
             load_resumes_ui,
             inputs=[rxresume_base_url],
@@ -1080,6 +1461,19 @@ def build_app(
                 results_markdown,
                 find_jobs_button,
                 analysis_token_state,
+            ],
+            queue=False,
+        )
+        load_resumes_button.click(
+            reset_custom_resume_ui,
+            outputs=[
+                selected_result_index_state,
+                generated_artifacts_state,
+                selected_job_markdown,
+                custom_resume_status,
+                create_custom_resume_button,
+                resume_pdf_download,
+                cover_letter_download,
             ],
             queue=False,
         )
@@ -1098,6 +1492,19 @@ def build_app(
             ],
             queue=False,
         )
+        rxresume_base_url.change(
+            reset_custom_resume_ui,
+            outputs=[
+                selected_result_index_state,
+                generated_artifacts_state,
+                selected_job_markdown,
+                custom_resume_status,
+                create_custom_resume_button,
+                resume_pdf_download,
+                cover_letter_download,
+            ],
+            queue=False,
+        )
         rxresume_resume_id.change(
             invalidate_analysis_ui,
             outputs=[
@@ -1113,6 +1520,19 @@ def build_app(
             ],
             queue=False,
         )
+        rxresume_resume_id.change(
+            reset_custom_resume_ui,
+            outputs=[
+                selected_result_index_state,
+                generated_artifacts_state,
+                selected_job_markdown,
+                custom_resume_status,
+                create_custom_resume_button,
+                resume_pdf_download,
+                cover_letter_download,
+            ],
+            queue=False,
+        )
         analyze_resume_button.click(
             preview_resume_ui,
             inputs=[
@@ -1120,6 +1540,7 @@ def build_app(
                 saved_pdf_name,
                 rxresume_base_url,
                 rxresume_resume_id,
+                settings_openai_model,
             ],
             outputs=[
                 status,
@@ -1129,6 +1550,19 @@ def build_app(
                 candidate_profile_state,
                 find_jobs_button,
                 analysis_token_state,
+            ],
+            queue=False,
+        )
+        analyze_resume_button.click(
+            reset_custom_resume_ui,
+            outputs=[
+                selected_result_index_state,
+                generated_artifacts_state,
+                selected_job_markdown,
+                custom_resume_status,
+                create_custom_resume_button,
+                resume_pdf_download,
+                cover_letter_download,
             ],
             queue=False,
         )
@@ -1144,6 +1578,7 @@ def build_app(
                 include_remote,
                 candidate_profile_state,
                 analysis_token_state,
+                settings_openai_model,
             ],
             outputs=[
                 status,
@@ -1155,6 +1590,48 @@ def build_app(
                 results_markdown,
                 find_jobs_button,
                 analysis_token_state,
+                matches_state,
+                selected_result_index_state,
+                generated_artifacts_state,
+                selected_job_markdown,
+                create_custom_resume_button,
+                resume_pdf_download,
+                cover_letter_download,
+            ],
+            queue=False,
+        )
+        results_table.select(
+            select_job_result_ui,
+            inputs=[source_type, matches_state, generated_artifacts_state],
+            outputs=[
+                selected_result_index_state,
+                selected_job_markdown,
+                custom_resume_status,
+                create_custom_resume_button,
+                resume_pdf_download,
+                cover_letter_download,
+            ],
+            queue=False,
+        )
+        create_custom_resume_button.click(
+            create_custom_resume_ui,
+            inputs=[
+                source_type,
+                rxresume_base_url,
+                rxresume_resume_id,
+                candidate_profile_state,
+                matches_state,
+                selected_result_index_state,
+                generated_artifacts_state,
+                settings_openai_model,
+            ],
+            outputs=[
+                generated_artifacts_state,
+                results_table,
+                custom_resume_status,
+                resume_pdf_download,
+                cover_letter_download,
+                selected_job_markdown,
             ],
             queue=False,
         )

@@ -7,6 +7,7 @@ from pathlib import Path
 
 ENV_KEYS = (
     "OPENAI_API_KEY",
+    "OPENAI_MODEL",
     "SERPAPI_API_KEY",
     "RX_RESUME_API_KEY",
     "RX_RESUME_API_URL",

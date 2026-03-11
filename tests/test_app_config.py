@@ -33,10 +33,13 @@ def test_build_app_starts_with_find_jobs_disabled_and_supports_browse_and_settin
     app = build_app()
 
     find_jobs_button = _component_by_value(app, "Find jobs")
+    create_resume_button = _component_by_value(app, "Create custom resume and cover letter")
     _component_by_value(app, "Settings")
     _component_by_label(app, "Browse PDF")
+    _component_by_label(app, "Backend model")
 
     assert find_jobs_button["props"]["interactive"] is False
+    assert create_resume_button["props"]["interactive"] is False
 
 
 def test_build_app_adds_pay_range_to_results_table():
@@ -44,6 +47,7 @@ def test_build_app_adds_pay_range_to_results_table():
     dataframe = _first_component_by_type(app, "dataframe")
 
     assert "pay_range" in dataframe["props"]["headers"]
+    assert "custom_resume" in dataframe["props"]["headers"]
 
 
 def test_build_app_disables_queue_for_resume_actions():

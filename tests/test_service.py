@@ -42,6 +42,7 @@ class FakeService:
         self.load_calls = []
         self.search_calls = []
         self.preview_calls = []
+        self.custom_resume_calls = []
 
     def load_rxresume_options(self, base_url, api_key):
         self.load_calls.append((base_url, api_key))
@@ -66,6 +67,14 @@ class FakeService:
             "location_used": "Toronto, ON",
             "status": "Resume analyzed.",
             "search_terms_text": "Machine Learning Engineer\nApplied Scientist",
+        }
+
+    def generate_custom_resume(self, **kwargs):
+        self.custom_resume_calls.append(kwargs)
+        return {
+            "status": "Custom resume and cover letter generated for Acme AI.",
+            "resume_pdf_path": "/tmp/tailored_resume.pdf",
+            "cover_letter_path": "/tmp/cover_letter.md",
         }
 
 
@@ -138,6 +147,7 @@ def test_controller_preview_profile_prefills_location_before_search():
         rxresume_api_key="",
         rxresume_resume_id="",
         openai_api_key="sk-test",
+        openai_model="gpt-5",
     )
 
     assert result["status"] == "Resume analyzed."
@@ -145,6 +155,7 @@ def test_controller_preview_profile_prefills_location_before_search():
     assert "Toronto, ON" in result["profile_markdown"]
     assert result["search_terms_text"] == "Machine Learning Engineer\nApplied Scientist"
     assert service.preview_calls[0]["source_type"] == "pdf"
+    assert service.preview_calls[0]["openai_model"] == "gpt-5"
 
 
 def test_controller_run_search_forwards_search_terms_text():
@@ -163,6 +174,45 @@ def test_controller_run_search_forwards_search_terms_text():
         location_override="Toronto, ON",
         include_remote=True,
         search_terms_text="Applied Scientist\nML Platform Engineer",
+        openai_model="gpt-5.4",
     )
 
     assert service.search_calls[0]["search_terms_text"] == "Applied Scientist\nML Platform Engineer"
+    assert service.search_calls[0]["openai_model"] == "gpt-5.4"
+
+
+def test_controller_run_search_serializes_matches_state():
+    result = AppController(FakeService()).run_search(
+        source_type="pdf",
+        pdf_bytes=b"%PDF-1.7",
+        pdf_filename="resume.pdf",
+        rxresume_base_url="",
+        rxresume_api_key="",
+        rxresume_resume_id="",
+        openai_api_key="sk-test",
+        serpapi_api_key="serp-test",
+        location_override="Toronto, ON",
+        include_remote=True,
+    )
+
+    assert result["matches_state"][0]["job"]["company"] == "Acme AI"
+
+
+def test_controller_generate_custom_resume_forwards_payload():
+    service = FakeService()
+    controller = AppController(service)
+
+    result = controller.generate_custom_resume(
+        source_type="rxresume",
+        rxresume_base_url="https://rxresu.me/api/openapi/resumes",
+        rxresume_api_key="",
+        rxresume_resume_id="resume-1",
+        candidate_profile=make_profile().model_dump(),
+        match=make_match().model_dump(),
+        openai_api_key="sk-test",
+        openai_model="gpt-5",
+    )
+
+    assert result["resume_pdf_path"] == "/tmp/tailored_resume.pdf"
+    assert service.custom_resume_calls[0]["openai_model"] == "gpt-5"
+    assert service.custom_resume_calls[0]["rxresume_resume_id"] == "resume-1"
