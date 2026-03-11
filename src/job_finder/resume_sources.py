@@ -130,12 +130,17 @@ def load_candidate_profile_from_rxresume(
     *,
     http_client: Any | None = None,
 ) -> CandidateProfile:
-    payload = _request_json(
-        build_rxresume_resume_url(base_url, resume_id),
-        api_key=api_key,
+    resume_document = load_rxresume_resume_document(
+        base_url,
+        api_key,
+        resume_id,
         http_client=http_client,
     )
-    resume = payload.get("item") or payload.get("data") or payload
+    resume = (
+        resume_document.get("data")
+        if isinstance(resume_document.get("data"), dict)
+        else resume_document
+    )
     return normalize_rxresume_resume(resume)
 
 
@@ -393,3 +398,152 @@ def load_candidate_profile_from_pdf(
         profile,
         error_message="Could not extract enough resume details from the PDF.",
     )
+
+
+def _auth_headers(api_key: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "x-api-key": api_key,
+        "Accept": "application/json",
+    }
+
+
+def _request(
+    method: str,
+    url: str,
+    *,
+    api_key: str,
+    http_client: Any | None = None,
+    json_body: Any | None = None,
+) -> Any:
+    headers = _auth_headers(api_key)
+    kwargs: dict[str, Any] = {
+        "headers": headers,
+        "timeout": 30.0,
+    }
+    if json_body is not None:
+        kwargs["json"] = json_body
+
+    if http_client is not None:
+        if hasattr(http_client, "request"):
+            response = http_client.request(method, url, **kwargs)
+        else:
+            request_method = getattr(http_client, method.lower())
+            response = request_method(url, **kwargs)
+        response.raise_for_status()
+        return response
+
+    with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+        response = client.request(method, url, **kwargs)
+        response.raise_for_status()
+        return response
+
+
+def load_rxresume_resume_document(
+    base_url: str,
+    api_key: str,
+    resume_id: str,
+    *,
+    http_client: Any | None = None,
+) -> dict[str, Any]:
+    payload = _request_json(
+        build_rxresume_resume_url(base_url, resume_id),
+        api_key=api_key,
+        http_client=http_client,
+    )
+    if isinstance(payload.get("item"), dict):
+        return payload["item"]
+    return payload
+
+
+def import_rxresume_resume(
+    base_url: str,
+    api_key: str,
+    resume_payload: dict[str, Any],
+    *,
+    name: str = "Job Finder Tailored Resume",
+    slug: str = "",
+    http_client: Any | None = None,
+) -> str:
+    response = _request(
+        "POST",
+        f"{build_rxresume_resumes_url(base_url)}/import",
+        api_key=api_key,
+        http_client=http_client,
+        json_body={
+            "data": resume_payload,
+            "name": name.strip() or "Job Finder Tailored Resume",
+            "slug": slug,
+        },
+    )
+    payload = response.json()
+    if isinstance(payload, str):
+        return payload
+    resume_id = (
+        payload.get("id")
+        or (payload.get("data") or {}).get("id")
+        or ((payload.get("data") or {}).get("resume") or {}).get("id")
+    )
+    if not resume_id:
+        raise ValueError("Reactive Resume import response did not include a resume id.")
+    return str(resume_id).strip()
+
+
+def export_rxresume_resume_pdf(
+    base_url: str,
+    api_key: str,
+    resume_id: str,
+    *,
+    http_client: Any | None = None,
+) -> str:
+    response = _request(
+        "GET",
+        f"{build_rxresume_resume_url(base_url, resume_id)}/pdf",
+        api_key=api_key,
+        http_client=http_client,
+    )
+    payload = response.json()
+    pdf_url = str(payload.get("url") or payload.get("href") or "").strip()
+    if not pdf_url:
+        raise ValueError("Reactive Resume PDF export response did not include a URL.")
+    return pdf_url
+
+
+def delete_rxresume_resume(
+    base_url: str,
+    api_key: str,
+    resume_id: str,
+    *,
+    http_client: Any | None = None,
+) -> None:
+    _request(
+        "DELETE",
+        build_rxresume_resume_url(base_url, resume_id),
+        api_key=api_key,
+        http_client=http_client,
+    )
+
+
+def download_file(
+    url: str,
+    destination: str | Any,
+    *,
+    http_client: Any | None = None,
+) -> None:
+    target = destination if hasattr(destination, "write_bytes") else None
+    if target is None:
+        from pathlib import Path
+
+        target = Path(destination)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    if http_client is not None:
+        response = http_client.get(url, timeout=30.0)
+        response.raise_for_status()
+        target.write_bytes(response.content)
+        return
+
+    with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+        response = client.get(url)
+        response.raise_for_status()
+        target.write_bytes(response.content)
