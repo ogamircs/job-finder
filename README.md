@@ -41,3 +41,7 @@ uv run job-finder
 - Search terms are generated from the analyzed resume, but you can edit them before running the job search.
 - `Find jobs` stays disabled until the currently selected resume has been analyzed.
 - The results table includes a `pay_range` column when salary data is present in SerpApi results.
+
+## Support
+
+If you enjoy this, buy me some tokens: [buymeacoffee.com/amircs](https://buymeacoffee.com/amircs)
