@@ -18,7 +18,8 @@ def saved_job_identity(match: ScoredJobMatch) -> str:
     provider_job_id = match.job.provider_job_id.strip().casefold()
     if provider_job_id:
         return f"id:{provider}:{provider_job_id}"
-    return "sig:{title}|{company}|{apply_url}".format(
+    return "sig:{provider}|{title}|{company}|{apply_url}".format(
+        provider=provider,
         title=match.job.title.strip().casefold(),
         company=match.job.company.strip().casefold(),
         apply_url=match.job.apply_url.strip().casefold(),

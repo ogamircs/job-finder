@@ -4,10 +4,16 @@ from job_finder.models import JobPosting, SavedJobRecord, ScoredJobMatch
 from job_finder.saved_jobs import SavedJobsStore
 
 
-def make_match(*, provider_job_id: str = "job-1", score: int = 9, title: str = "Machine Learning Engineer"):
+def make_match(
+    *,
+    provider: str = "serpapi_google_jobs",
+    provider_job_id: str = "job-1",
+    score: int = 9,
+    title: str = "Machine Learning Engineer",
+):
     return ScoredJobMatch(
         job=JobPosting(
-            provider="serpapi_google_jobs",
+            provider=provider,
             provider_job_id=provider_job_id,
             title=title,
             company="Acme AI",
@@ -69,6 +75,21 @@ def test_saved_jobs_store_persists_multiple_distinct_matches_across_reloads(tmp_
 
     assert len(listed) == 2
     assert {record.match.job.provider_job_id for record in listed} == {"job-1", "job-2"}
+
+
+def test_saved_jobs_store_distinguishes_fallback_identity_by_provider(tmp_path: Path):
+    store = SavedJobsStore(tmp_path / "saved_jobs.sqlite3")
+
+    first = store.save_match(make_match(provider="serpapi_google_jobs", provider_job_id=""))
+    second = store.save_match(make_match(provider="greenhouse", provider_job_id=""))
+
+    listed = store.list_jobs()
+
+    assert first.created is True
+    assert second.created is True
+    assert first.record.id != second.record.id
+    assert len(listed) == 2
+    assert {record.match.job.provider for record in listed} == {"serpapi_google_jobs", "greenhouse"}
 
 
 def test_saved_jobs_store_updates_and_deletes_existing_rows(tmp_path: Path):
