@@ -7,6 +7,7 @@ from pathlib import Path
 
 ENV_KEYS = (
     "OPENAI_API_KEY",
+    "OPENAI_MODEL",
     "SERPAPI_API_KEY",
     "RX_RESUME_API_KEY",
     "RX_RESUME_API_URL",
@@ -20,9 +21,16 @@ class SavedResume:
 
 
 class LocalWorkspace:
-    def __init__(self, *, env_path: Path | str = ".env", resume_dir: Path | str = ".resume") -> None:
+    def __init__(
+        self,
+        *,
+        env_path: Path | str = ".env",
+        resume_dir: Path | str = ".resume",
+        saved_jobs_db_path: Path | str = ".saved_jobs.sqlite3",
+    ) -> None:
         self.env_path = Path(env_path)
         self.resume_dir = Path(resume_dir)
+        self.saved_jobs_db_path = Path(saved_jobs_db_path)
 
     def env_exists(self) -> bool:
         return self.env_path.exists()

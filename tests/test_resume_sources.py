@@ -7,6 +7,12 @@ from job_finder.resume_sources import (
     build_rxresume_resume_url,
     build_rxresume_resumes_url,
     candidate_profile_response_schema,
+    delete_rxresume_resume,
+    download_file,
+    export_rxresume_resume_pdf,
+    import_rxresume_resume,
+    load_rxresume_resume_document,
+    load_candidate_profile_from_rxresume,
     list_rxresume_resumes,
     load_candidate_profile_from_pdf,
     normalize_rxresume_resume,
@@ -14,8 +20,9 @@ from job_finder.resume_sources import (
 
 
 class FakeHttpResponse:
-    def __init__(self, payload):
+    def __init__(self, payload=None, content=b""):
         self._payload = payload
+        self.content = content
 
     def raise_for_status(self):
         return None
@@ -39,6 +46,41 @@ class FakeHttpClient:
             }
         )
         return FakeHttpResponse(self.payload)
+
+
+class FakeRequestHttpClient:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def request(self, method, url, *, headers=None, json=None, timeout=None):
+        self.calls.append(
+            {
+                "method": method,
+                "url": url,
+                "headers": headers,
+                "json": json,
+                "timeout": timeout,
+            }
+        )
+        response = self.responses.pop(0)
+        if isinstance(response, bytes):
+            return FakeHttpResponse(content=response)
+        return FakeHttpResponse(payload=response)
+
+    def get(self, url, *, headers=None, timeout=None):
+        self.calls.append(
+            {
+                "method": "GET",
+                "url": url,
+                "headers": headers,
+                "timeout": timeout,
+            }
+        )
+        response = self.responses.pop(0)
+        if isinstance(response, bytes):
+            return FakeHttpResponse(content=response)
+        return FakeHttpResponse(payload=response)
 
 
 class RecordingContextClient:
@@ -349,3 +391,121 @@ def test_build_rxresume_urls_support_default_openapi_path():
     assert build_rxresume_resume_url("https://rxresu.me/api/openapi/resumes", "resume-1") == (
         "https://rxresu.me/api/openapi/resumes/resume-1"
     )
+
+
+def test_load_rxresume_resume_document_uses_openapi_resume_url():
+    client = FakeHttpClient({"id": "resume-1", "data": {"basics": {"name": "Ada"}}})
+
+    resume = load_rxresume_resume_document(
+        "https://rx.example.com",
+        "rx-key",
+        "resume-1",
+        http_client=client,
+    )
+
+    assert resume["id"] == "resume-1"
+    assert client.calls[0]["url"] == "https://rx.example.com/api/openapi/resumes/resume-1"
+
+
+def test_load_candidate_profile_from_rxresume_reads_openapi_data_payload():
+    client = FakeHttpClient(
+        {
+            "id": "resume-1",
+            "name": "Primary Resume",
+            "data": {
+                "basics": {
+                    "name": "Ada Lovelace",
+                    "headline": "Machine Learning Engineer",
+                    "location": "Toronto, ON",
+                },
+                "summary": {"content": "<p>Builds production recommendation systems.</p>"},
+                "sections": {
+                    "experience": {
+                        "items": [
+                            {
+                                "position": "Machine Learning Engineer",
+                                "period": "Jan 2020 - Jan 2022",
+                                "description": "<ul><li>Built ranking systems.</li></ul>",
+                            }
+                        ]
+                    },
+                    "skills": {
+                        "items": [
+                            {"name": "Core", "keywords": ["Python", "Ranking"]},
+                        ]
+                    },
+                },
+            },
+        }
+    )
+
+    profile = load_candidate_profile_from_rxresume(
+        "https://rx.example.com",
+        "rx-key",
+        "resume-1",
+        http_client=client,
+    )
+
+    assert profile.name == "Ada Lovelace"
+    assert profile.headline == "Machine Learning Engineer"
+    assert profile.top_skills[:2] == ["Core", "Python"]
+
+
+def test_import_export_delete_and_download_rxresume_artifacts(tmp_path):
+    client = FakeRequestHttpClient(
+        [
+            {"id": "temp-resume-123"},
+            {"url": "https://cdn.example.com/temp-resume-123.pdf"},
+            {},
+            b"%PDF-1.7 generated",
+        ]
+    )
+
+    resume_id = import_rxresume_resume(
+        "https://rx.example.com",
+        "rx-key",
+        {"basics": {"name": "Ada"}},
+        name="Tailored Ada Resume",
+        slug="",
+        http_client=client,
+    )
+    pdf_url = export_rxresume_resume_pdf(
+        "https://rx.example.com",
+        "rx-key",
+        resume_id,
+        http_client=client,
+    )
+    delete_rxresume_resume(
+        "https://rx.example.com",
+        "rx-key",
+        resume_id,
+        http_client=client,
+    )
+
+    output_path = tmp_path / "tailored.pdf"
+    download_file(pdf_url, output_path, http_client=client)
+
+    assert resume_id == "temp-resume-123"
+    assert pdf_url == "https://cdn.example.com/temp-resume-123.pdf"
+    assert output_path.read_bytes() == b"%PDF-1.7 generated"
+    assert client.calls[0] == {
+        "method": "POST",
+        "url": "https://rx.example.com/api/openapi/resumes/import",
+        "headers": {
+            "Authorization": "Bearer rx-key",
+            "x-api-key": "rx-key",
+            "Accept": "application/json",
+        },
+        "json": {
+            "data": {"basics": {"name": "Ada"}},
+            "name": "Tailored Ada Resume",
+            "slug": "",
+        },
+        "timeout": 30.0,
+    }
+    assert client.calls[1]["method"] == "GET"
+    assert client.calls[1]["url"] == "https://rx.example.com/api/openapi/resumes/temp-resume-123/pdf"
+    assert client.calls[2]["method"] == "DELETE"
+    assert client.calls[2]["url"] == "https://rx.example.com/api/openapi/resumes/temp-resume-123"
+    assert client.calls[3]["method"] == "GET"
+    assert client.calls[3]["url"] == "https://cdn.example.com/temp-resume-123.pdf"

@@ -143,3 +143,74 @@ class SearchRunResult(BaseModel):
     location_used: str = ""
     matches: list[ScoredJobMatch] = Field(default_factory=list)
     status: str = ""
+
+
+class SavedJobRecord(BaseModel):
+    id: int
+    match: ScoredJobMatch
+    created_at: str = ""
+    updated_at: str = ""
+
+    @field_validator("created_at", "updated_at", mode="before")
+    @classmethod
+    def _clean_saved_job_timestamps(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+
+class TailoredSkillCategory(BaseModel):
+    name: str
+    keywords: list[str] = Field(default_factory=list)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _clean_name(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+    @field_validator("keywords", mode="before")
+    @classmethod
+    def _clean_keywords(cls, value: Any) -> list[str]:
+        return _clean_unique_strings(value)
+
+
+class TailoredApplicationContent(BaseModel):
+    headline: str = ""
+    summary: str = ""
+    skills: list[TailoredSkillCategory] = Field(default_factory=list)
+    cover_letter: str = ""
+
+    @field_validator("headline", "summary", "cover_letter", mode="before")
+    @classmethod
+    def _clean_text_fields(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+
+class GeneratedApplicationArtifacts(BaseModel):
+    base_resume_id: str
+    remote_resume_id: str
+    company: str
+    job_title: str
+    generated_at: str
+    artifact_dir: str
+    pdf_url: str
+    pdf_path: str
+    cover_letter_path: str
+    resume_json_path: str
+    metadata_path: str
+
+    @field_validator(
+        "base_resume_id",
+        "remote_resume_id",
+        "company",
+        "job_title",
+        "generated_at",
+        "artifact_dir",
+        "pdf_url",
+        "pdf_path",
+        "cover_letter_path",
+        "resume_json_path",
+        "metadata_path",
+        mode="before",
+    )
+    @classmethod
+    def _clean_artifact_fields(cls, value: Any) -> str:
+        return str(value or "").strip()

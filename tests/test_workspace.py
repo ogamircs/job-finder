@@ -12,6 +12,7 @@ def test_local_workspace_saves_and_loads_env_values(tmp_path: Path):
     workspace.save_env_values(
         {
             "OPENAI_API_KEY": "sk-test",
+            "OPENAI_MODEL": "gpt-5",
             "SERPAPI_API_KEY": "serp-test",
             "RX_RESUME_API_KEY": "rx-test",
             "RX_RESUME_API_URL": "https://rxresu.me/api/openapi/resumes",
@@ -21,6 +22,37 @@ def test_local_workspace_saves_and_loads_env_values(tmp_path: Path):
     assert workspace.env_exists() is True
     assert workspace.load_env_values() == {
         "OPENAI_API_KEY": "sk-test",
+        "OPENAI_MODEL": "gpt-5",
+        "SERPAPI_API_KEY": "serp-test",
+        "RX_RESUME_API_KEY": "rx-test",
+        "RX_RESUME_API_URL": "https://rxresu.me/api/openapi/resumes",
+    }
+
+
+def test_local_workspace_preserves_saved_openai_model_when_updating_other_keys(tmp_path: Path):
+    workspace = LocalWorkspace(
+        env_path=tmp_path / ".env",
+        resume_dir=tmp_path / ".resume",
+    )
+
+    workspace.save_env_values(
+        {
+            "OPENAI_API_KEY": "sk-test",
+            "OPENAI_MODEL": "gpt-5.4",
+            "SERPAPI_API_KEY": "serp-test",
+        }
+    )
+
+    workspace.save_env_values(
+        {
+            "RX_RESUME_API_KEY": "rx-test",
+            "RX_RESUME_API_URL": "https://rxresu.me/api/openapi/resumes",
+        }
+    )
+
+    assert workspace.load_env_values() == {
+        "OPENAI_API_KEY": "sk-test",
+        "OPENAI_MODEL": "gpt-5.4",
         "SERPAPI_API_KEY": "serp-test",
         "RX_RESUME_API_KEY": "rx-test",
         "RX_RESUME_API_URL": "https://rxresu.me/api/openapi/resumes",

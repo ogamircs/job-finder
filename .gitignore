@@ -6,5 +6,6 @@ __pycache__/
 .env
 .env.*
 .resume/
+.saved_jobs.sqlite3
 output/
 *.pdf
