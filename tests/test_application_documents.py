@@ -82,9 +82,57 @@ def test_apply_tailored_resume_content_updates_common_resume_fields():
     )
     assert "Production ML leader" in tailored["summary"]["content"]
     assert tailored["sections"]["skills"]["items"] == [
-        {"name": "Core", "keywords": ["Python", "Ranking", "LLMs"]},
-        {"name": "Platform", "keywords": ["Airflow", "Snowflake"]},
+        {
+            "name": "Core",
+            "keywords": ["Python", "Ranking", "LLMs"],
+            "id": "tailored-skill-1",
+            "hidden": False,
+            "icon": "",
+            "proficiency": "",
+            "level": 0,
+        },
+        {
+            "name": "Platform",
+            "keywords": ["Airflow", "Snowflake"],
+            "id": "tailored-skill-2",
+            "hidden": False,
+            "icon": "",
+            "proficiency": "",
+            "level": 0,
+        },
     ]
+
+
+def test_apply_tailored_resume_content_preserves_required_skill_fields_from_template():
+    base_resume = {
+        "sections": {
+            "skills": {
+                "items": [
+                    {
+                        "id": "skill-1",
+                        "hidden": False,
+                        "icon": "brain",
+                        "name": "Existing",
+                        "proficiency": "expert",
+                        "level": 3,
+                        "keywords": ["Python"],
+                    }
+                ]
+            }
+        }
+    }
+
+    tailored = apply_tailored_resume_content(base_resume, make_tailored_content())
+
+    assert tailored["sections"]["skills"]["items"][0] == {
+        "id": "skill-1",
+        "hidden": False,
+        "icon": "brain",
+        "name": "Core",
+        "proficiency": "expert",
+        "level": 3,
+        "keywords": ["Python", "Ranking", "LLMs"],
+    }
 
 
 def test_generate_tailored_application_content_uses_requested_model():
@@ -192,3 +240,32 @@ def test_generate_application_artifacts_deletes_remote_resume_on_failure(tmp_pat
         )
 
     assert calls["delete"] == [("https://rx.example.com", "rx-key", "temp-resume-999")]
+
+
+def test_generate_application_artifacts_returns_files_when_cleanup_delete_fails(tmp_path: Path):
+    service = ApplicationArtifactsService(
+        output_root=tmp_path,
+        now_provider=lambda: datetime(2026, 3, 11, 12, 0, 0, tzinfo=timezone.utc),
+        resume_loader=lambda base_url, api_key, resume_id: {
+            "basics": {"name": "Ada Lovelace", "label": "ML Engineer", "summary": "Original"},
+            "sections": {"skills": {"items": []}},
+        },
+        content_generator=lambda **kwargs: make_tailored_content(),
+        resume_importer=lambda base_url, api_key, resume_payload, **kwargs: "temp-resume-555",
+        pdf_exporter=lambda base_url, api_key, resume_id: "https://cdn.example.com/temp-resume-555.pdf",
+        file_downloader=lambda url, destination: destination.write_bytes(b"%PDF-1.7 test"),
+        resume_deleter=lambda base_url, api_key, resume_id: (_ for _ in ()).throw(RuntimeError("cleanup failed")),
+    )
+
+    artifacts = service.generate_application_artifacts(
+        rxresume_base_url="https://rx.example.com",
+        rxresume_api_key="rx-key",
+        base_resume_id="base-resume-1",
+        scored_job=make_scored_job(),
+        openai_api_key="sk-test",
+        openai_model="gpt-4o",
+    )
+
+    assert isinstance(artifacts, GeneratedApplicationArtifacts)
+    assert Path(artifacts.pdf_path).read_bytes() == b"%PDF-1.7 test"
+    assert Path(artifacts.cover_letter_path).exists()

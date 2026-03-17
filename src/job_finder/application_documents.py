@@ -107,10 +107,28 @@ def apply_tailored_resume_content(
         summary_section["content"] = tailored_content.summary
 
     if tailored_content.skills:
-        skills_section["items"] = [
-            {"name": skill.name, "keywords": list(skill.keywords)}
-            for skill in tailored_content.skills
-        ]
+        existing_items = skills_section.get("items")
+        template_items = [item for item in existing_items if isinstance(item, dict)] if isinstance(existing_items, list) else []
+        default_template = template_items[0] if template_items else {}
+        next_items: list[dict[str, Any]] = []
+        for index, skill in enumerate(tailored_content.skills):
+            template = dict(template_items[index]) if index < len(template_items) else dict(default_template)
+            if "id" not in template or not str(template.get("id") or "").strip():
+                template["id"] = f"tailored-skill-{index + 1}"
+            if "hidden" not in template:
+                template["hidden"] = False
+            if "icon" not in template:
+                template["icon"] = ""
+            if "proficiency" not in template:
+                template["proficiency"] = ""
+            if "level" not in template:
+                template["level"] = 0
+
+            template["name"] = skill.name
+            template["keywords"] = list(skill.keywords)
+            next_items.append(template)
+
+        skills_section["items"] = next_items
 
     return resume
 
@@ -214,7 +232,6 @@ class ApplicationArtifactsService:
 
         remote_resume_id: str | None = None
         pdf_url = ""
-        generation_error: Exception | None = None
         try:
             remote_resume_id = self.resume_importer(
                 rxresume_base_url,
@@ -265,13 +282,12 @@ class ApplicationArtifactsService:
                 resume_json_path=str(resume_json_path),
                 metadata_path=str(metadata_path),
             )
-        except Exception as exc:
-            generation_error = exc
+        except Exception:
             raise
         finally:
             if remote_resume_id:
                 try:
                     self.resume_deleter(rxresume_base_url, rxresume_api_key, remote_resume_id)
                 except Exception:
-                    if generation_error is None:
-                        raise
+                    # Cleanup is best-effort once local artifacts have been written.
+                    pass

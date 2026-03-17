@@ -145,6 +145,18 @@ class SearchRunResult(BaseModel):
     status: str = ""
 
 
+class SavedJobRecord(BaseModel):
+    id: int
+    match: ScoredJobMatch
+    created_at: str = ""
+    updated_at: str = ""
+
+    @field_validator("created_at", "updated_at", mode="before")
+    @classmethod
+    def _clean_saved_job_timestamps(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+
 class TailoredSkillCategory(BaseModel):
     name: str
     keywords: list[str] = Field(default_factory=list)
