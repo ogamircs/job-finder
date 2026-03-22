@@ -122,12 +122,11 @@ def test_build_app_starts_with_find_jobs_disabled_and_supports_tabs_and_settings
     )
 
 
-def test_build_app_adds_pay_range_to_results_table():
+def test_build_app_adds_pay_range_to_saved_jobs_table():
     app = build_app()
     dataframes = [component for component in app.config["components"] if component.get("type") == "dataframe"]
 
     assert any("Pay Range" in dataframe["props"]["headers"] for dataframe in dataframes)
-    assert any(dataframe["props"]["headers"] == ["Score", "Title", "Company", "Location", "Pay Range", "Source", "Apply", "Saved"] for dataframe in dataframes)
     assert any(dataframe["props"]["headers"] == ["Score", "Title", "Company", "Location", "Pay Range", "Source", "Apply", "Updated"] for dataframe in dataframes)
     assert any(dataframe["props"].get("datatype", [None] * 8)[6] == "html" for dataframe in dataframes)
 

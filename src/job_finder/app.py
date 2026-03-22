@@ -192,6 +192,194 @@ APP_CSS = """
     color: var(--body-text-color-subdued);
     margin: 0 0 14px 0;
 }
+
+/* Wizard progress bar */
+.wizard-progress {
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    gap: 0;
+    margin: 24px 0;
+    padding: 0 40px;
+}
+
+.wizard-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    position: relative;
+    flex: 0 0 auto;
+    min-width: 90px;
+}
+
+.wizard-step-circle {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.9rem;
+    z-index: 1;
+    border: 2px solid var(--border-color-primary);
+    background: var(--block-background-fill);
+    color: var(--body-text-color-subdued);
+}
+
+.wizard-step.active .wizard-step-circle {
+    border-color: #2563eb;
+    background: rgba(59, 130, 246, 0.14);
+    color: #2563eb;
+}
+
+.wizard-step.done .wizard-step-circle {
+    border-color: #16a34a;
+    background: rgba(22, 163, 74, 0.14);
+    color: #16a34a;
+}
+
+.wizard-step-label {
+    margin-top: 6px;
+    font-size: 0.8rem;
+    color: var(--body-text-color-subdued);
+    text-align: center;
+}
+
+.wizard-step.active .wizard-step-label {
+    color: #2563eb;
+    font-weight: 600;
+}
+
+.wizard-step.done .wizard-step-label {
+    color: #16a34a;
+}
+
+.wizard-connector {
+    flex: 1;
+    height: 2px;
+    min-width: 32px;
+    background: var(--border-color-primary);
+    margin-top: 18px;
+}
+
+.wizard-connector.done {
+    background: #16a34a;
+}
+
+.wizard-nav {
+    display: flex;
+    gap: 12px;
+    margin-top: 18px;
+}
+
+/* Job result cards */
+.job-cards-container {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 620px;
+    overflow-y: auto;
+}
+
+.job-cards-header {
+    font-size: 0.9rem;
+    color: var(--body-text-color-subdued);
+    margin-bottom: 8px;
+    font-weight: 600;
+}
+
+.job-cards-empty {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--body-text-color-subdued);
+}
+
+.job-card {
+    border: 1px solid var(--border-color-primary);
+    border-radius: 12px;
+    padding: 14px 16px;
+    background: var(--block-background-fill);
+    transition: border-color 0.15s;
+}
+
+.job-card:hover {
+    border-color: #2563eb;
+}
+
+.job-card-selected {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 1px #2563eb;
+}
+
+.job-card-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+.score-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 48px;
+    padding: 4px 8px;
+    border-radius: 8px;
+    font-weight: 700;
+    font-size: 0.85rem;
+    flex-shrink: 0;
+}
+
+.score-high {
+    background: rgba(22, 163, 74, 0.14);
+    color: #15803d;
+}
+
+.score-mid {
+    background: rgba(245, 158, 11, 0.14);
+    color: #b45309;
+}
+
+.score-low {
+    background: rgba(239, 68, 68, 0.12);
+    color: #b91c1c;
+}
+
+.job-card-title {
+    flex: 1;
+}
+
+.job-card-role {
+    font-weight: 600;
+    font-size: 1rem;
+}
+
+.job-card-company {
+    color: var(--body-text-color-subdued);
+    font-size: 0.9rem;
+}
+
+.saved-indicator {
+    font-size: 0.78rem;
+    color: #b45309;
+    white-space: nowrap;
+}
+
+.job-card-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-top: 8px;
+    font-size: 0.85rem;
+    color: var(--body-text-color-subdued);
+}
+
+.job-card-skills {
+    margin-top: 6px;
+    font-size: 0.82rem;
+    color: var(--body-text-color-subdued);
+    font-style: italic;
+}
 """
 
 
@@ -435,6 +623,97 @@ def _apply_link_button_html(url: str) -> str:
         f'{_format_link(url, "Apply")}'
         "</div>"
     )
+
+
+def _wizard_progress_html(current_step: int, labels: list[str]) -> str:
+    parts: list[str] = []
+    for i, label in enumerate(labels, 1):
+        state = "done" if i < current_step else ("active" if i == current_step else "")
+        circle = "&#10003;" if i < current_step else str(i)
+        parts.append(
+            f'<div class="wizard-step {state}">'
+            f'<div class="wizard-step-circle">{circle}</div>'
+            f'<div class="wizard-step-label">{html.escape(label)}</div>'
+            f"</div>"
+        )
+        if i < len(labels):
+            connector_state = "done" if i < current_step else ""
+            parts.append(f'<div class="wizard-connector {connector_state}"></div>')
+    return f'<div class="wizard-progress">{"".join(parts)}</div>'
+
+
+_SETUP_WIZARD_LABELS = ["AI Configuration", "Job Search API", "Resume"]
+_SEARCH_WIZARD_LABELS = ["Select Resume", "Analyze", "Preferences", "Results"]
+
+
+def _setup_wizard_progress_html(current_step: int) -> str:
+    return _wizard_progress_html(current_step, _SETUP_WIZARD_LABELS)
+
+
+def _search_wizard_progress_html(current_step: int) -> str:
+    return _wizard_progress_html(current_step, _SEARCH_WIZARD_LABELS)
+
+
+def _job_cards_html(
+    visible_matches: list[Any],
+    *,
+    saved_jobs_state: list[dict[str, Any]] | None = None,
+    selected_index: int | None = None,
+) -> str:
+    if not visible_matches:
+        return '<div class="job-cards-empty">No matching jobs found.</div>'
+
+    saved_identities = {
+        saved_job_identity(SavedJobRecord.model_validate(item).match)
+        for item in (saved_jobs_state or [])
+    }
+
+    cards: list[str] = []
+    for i, raw_match in enumerate(visible_matches):
+        match = ScoredJobMatch.model_validate(raw_match)
+        is_saved = saved_job_identity(match) in saved_identities
+        is_selected = i == selected_index
+        score = match.score_10
+        score_class = "score-high" if score >= 8 else ("score-mid" if score >= 6 else "score-low")
+        location = match.job.location or ("Remote" if match.job.remote_flag else "")
+        skills_preview = ", ".join(match.matched_skills[:4])
+
+        saved_html = '<span class="saved-indicator">&#9733; Saved</span>' if is_saved else ""
+        skills_html = f'<div class="job-card-skills">{html.escape(skills_preview)}</div>' if skills_preview else ""
+
+        cards.append(
+            f'<div class="job-card {"job-card-selected" if is_selected else ""}">'
+            f'<div class="job-card-header">'
+            f'<span class="score-badge {score_class}">{score}/10</span>'
+            f'<div class="job-card-title">'
+            f'<div class="job-card-role">{html.escape(match.job.title)}</div>'
+            f'<div class="job-card-company">{html.escape(match.job.company)}</div>'
+            f"</div>"
+            f"{saved_html}"
+            f"</div>"
+            f'<div class="job-card-meta">'
+            f"<span>{html.escape(location)}</span>"
+            f'<span>{html.escape(match.job.pay_range or "Pay not listed")}</span>'
+            f"<span>{html.escape(match.job.via)}</span>"
+            f"</div>"
+            f"{skills_html}"
+            f"</div>"
+        )
+
+    count_text = f"{len(visible_matches)} job{'s' if len(visible_matches) != 1 else ''} found"
+    return (
+        f'<div class="job-cards-header">{html.escape(count_text)}</div>'
+        f'<div class="job-cards-container">{"".join(cards)}</div>'
+    )
+
+
+def _job_selector_choices(visible_matches: list[Any]) -> list[tuple[str, int]]:
+    choices: list[tuple[str, int]] = []
+    for i, raw_match in enumerate(visible_matches):
+        match = ScoredJobMatch.model_validate(raw_match)
+        label = f"{match.job.title} at {match.job.company} ({match.score_10}/10)"
+        choices.append((label, i))
+    return choices
 
 
 def _profile_markdown(profile: CandidateProfile, *, location_used: str) -> str:
@@ -2946,6 +3225,7 @@ def build_app(
         filter_text: str,
         selected_result_match: dict[str, Any] | None,
         status_text: str,
+        wizard_step: int = 1,
     ) -> tuple[Any, ...]:
         source = source_type.strip().lower() or "pdf"
         rxresume_options = normalize_rxresume_options(rxresume_options_state)
@@ -3005,8 +3285,6 @@ def build_app(
             profile = CandidateProfile.model_validate(candidate_profile)
             location_used = location_override.strip() or profile.inferred_location
 
-        results_frame = current_results_frame(matches_state, saved_jobs_state, sort_by, filter_text)
-
         artifact = {}
         if selected_match is not None:
             artifact = dict((generated_artifacts_state or {}).get(saved_job_identity(selected_match), {}))
@@ -3014,7 +3292,36 @@ def build_app(
         cover_letter_path = str(artifact.get("cover_letter_path") or "").strip()
         selected_visible = selected_match is not None
 
+        selected_index: int | None = None
+        if selected_match is not None:
+            sel_key = saved_job_identity(selected_match)
+            for idx, vm in enumerate(visible_matches):
+                if saved_job_identity(vm) == sel_key:
+                    selected_index = idx
+                    break
+
+        job_cards = _job_cards_html(
+            visible_matches,
+            saved_jobs_state=saved_jobs_state,
+            selected_index=selected_index,
+        )
+        selector_choices = _job_selector_choices(visible_matches)
+
+        # Determine search wizard next button label
+        if wizard_step == 3:
+            next_label = "Find Jobs"
+        else:
+            next_label = "Next"
+
         return (
+            _search_wizard_progress_html(wizard_step),
+            gr.update(visible=wizard_step == 1),
+            gr.update(visible=wizard_step == 2),
+            gr.update(visible=wizard_step == 3),
+            gr.update(visible=wizard_step == 4),
+            gr.update(visible=wizard_step > 1),
+            gr.update(visible=wizard_step < 4, value=next_label),
+            wizard_step,
             gr.update(visible=source == "pdf"),
             gr.update(visible=source == "rxresume"),
             saved_resume_update(saved_resume_name),
@@ -3045,7 +3352,8 @@ def build_app(
             visible_matches_state,
             bool(search_attempted),
             dict(generated_artifacts_state or {}),
-            results_frame,
+            job_cards,
+            gr.update(choices=selector_choices, value=selected_index),
             selected_match.model_dump() if selected_match is not None else None,
             gr.update(visible=selected_visible),
             _job_detail_html(selected_match) if selected_visible else "",
@@ -3143,6 +3451,109 @@ def build_app(
 
     def toggle_setup_source(source_type: str) -> dict[str, Any]:
         return gr.update(visible=source_type.strip().lower() == "pdf")
+
+    def _setup_wizard_outputs(step: int) -> tuple[Any, ...]:
+        return (
+            step,
+            _setup_wizard_progress_html(step),
+            gr.update(visible=step == 1),
+            gr.update(visible=step == 2),
+            gr.update(visible=step == 3),
+            gr.update(visible=step > 1),
+            gr.update(visible=step < 3),
+            gr.update(visible=step == 3),
+        )
+
+    def setup_next_ui(
+        current_step: int,
+        openai_api_key: str,
+        serpapi_api_key: str,
+    ) -> tuple[Any, ...]:
+        if current_step == 1 and not openai_api_key.strip():
+            return (_status_html("Provide an OpenAI API key to continue."), *_setup_wizard_outputs(1))
+        if current_step == 2 and not serpapi_api_key.strip():
+            return (_status_html("Provide a SerpApi key to continue."), *_setup_wizard_outputs(2))
+        next_step = min(current_step + 1, 3)
+        return ("", *_setup_wizard_outputs(next_step))
+
+    def setup_back_ui(current_step: int) -> tuple[Any, ...]:
+        prev_step = max(current_step - 1, 1)
+        return ("", *_setup_wizard_outputs(prev_step))
+
+    def toggle_setup_source_fields(source_type: str) -> tuple[dict[str, Any], ...]:
+        is_pdf = source_type.strip().lower() == "pdf"
+        return (
+            gr.update(visible=is_pdf),
+            gr.update(visible=not is_pdf),
+            gr.update(visible=not is_pdf),
+        )
+
+    def search_wizard_next_ui(
+        wizard_step: int,
+        source_type: str,
+        saved_resume_name: str | None,
+        rxresume_resume_id: str,
+        candidate_profile: dict[str, Any] | None,
+        analysis_token: str,
+    ) -> tuple[Any, ...]:
+        if wizard_step == 1:
+            if not source_is_ready(source_type, saved_resume_name, rxresume_resume_id):
+                return (
+                    _status_html("Select a resume before continuing."),
+                    _search_wizard_progress_html(1),
+                    gr.update(visible=True), gr.update(visible=False),
+                    gr.update(visible=False), gr.update(visible=False),
+                    gr.update(visible=False), gr.update(visible=True, value="Next"),
+                    1,
+                )
+            return (
+                _status_html("Analyze the selected resume to continue."),
+                _search_wizard_progress_html(2),
+                gr.update(visible=False), gr.update(visible=True),
+                gr.update(visible=False), gr.update(visible=False),
+                gr.update(visible=True), gr.update(visible=True, value="Next"),
+                2,
+            )
+        if wizard_step == 2:
+            current_token = current_resume_token(source_type, saved_resume_name, rxresume_resume_id)
+            if candidate_profile is None or not analysis_token or analysis_token != current_token:
+                return (
+                    _status_html("Analyze the selected resume before continuing."),
+                    _search_wizard_progress_html(2),
+                    gr.update(visible=False), gr.update(visible=True),
+                    gr.update(visible=False), gr.update(visible=False),
+                    gr.update(visible=True), gr.update(visible=True, value="Next"),
+                    2,
+                )
+            return (
+                _status_html("Set your search preferences, then click Find Jobs."),
+                _search_wizard_progress_html(3),
+                gr.update(visible=False), gr.update(visible=False),
+                gr.update(visible=True), gr.update(visible=False),
+                gr.update(visible=True), gr.update(visible=True, value="Find Jobs"),
+                3,
+            )
+        # Step 3 → 4 is handled by find_jobs_ui, not the Next button
+        return (
+            "",
+            _search_wizard_progress_html(wizard_step),
+            gr.update(visible=wizard_step == 1), gr.update(visible=wizard_step == 2),
+            gr.update(visible=wizard_step == 3), gr.update(visible=wizard_step == 4),
+            gr.update(visible=wizard_step > 1), gr.update(visible=wizard_step < 4),
+            wizard_step,
+        )
+
+    def search_wizard_back_ui(wizard_step: int) -> tuple[Any, ...]:
+        prev_step = max(wizard_step - 1, 1)
+        next_label = "Find Jobs" if prev_step == 3 else "Next"
+        return (
+            "",
+            _search_wizard_progress_html(prev_step),
+            gr.update(visible=prev_step == 1), gr.update(visible=prev_step == 2),
+            gr.update(visible=prev_step == 3), gr.update(visible=prev_step == 4),
+            gr.update(visible=prev_step > 1), gr.update(visible=prev_step < 4, value=next_label),
+            prev_step,
+        )
 
     def toggle_settings_ui(current_visible: bool) -> tuple[bool, dict[str, Any]]:
         next_visible = not current_visible
@@ -3481,6 +3892,7 @@ def build_app(
             filter_text=filter_text,
             selected_result_match=None,
             status_text=result["status"],
+            wizard_step=2,
         )
 
     def find_jobs_ui(
@@ -3519,6 +3931,7 @@ def build_app(
                 filter_text=filter_text,
                 selected_result_match=None,
                 status_text="Analyze the selected resume before searching.",
+                wizard_step=2,
             )
         pdf_bytes: bytes | None = None
         pdf_filename = ""
@@ -3557,6 +3970,7 @@ def build_app(
             filter_text=filter_text,
             selected_result_match=None,
             status_text=result["status"],
+            wizard_step=4,
         )
 
     def refresh_results_controls_ui(
@@ -3600,9 +4014,11 @@ def build_app(
             filter_text=filter_text,
             selected_result_match=None,
             status_text=status_text,
+            wizard_step=4,
         )
 
-    def select_job_result_ui(
+    def select_job_from_cards_ui(
+        selected_index: int | None,
         source_type: str,
         saved_resume_name: str | None,
         rxresume_resume_id: str,
@@ -3619,13 +4035,11 @@ def build_app(
         sort_by: str,
         filter_text: str,
         search_status_text: str,
-        evt: gr.SelectData,
     ) -> tuple[Any, ...]:
         visible_matches = _filter_and_sort_matches(matches_from_state(matches_state), sort_by=sort_by, filter_text=filter_text)
-        row_index = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
         selected_match = None
-        if isinstance(row_index, int) and 0 <= row_index < len(visible_matches):
-            selected_match = visible_matches[row_index].model_dump()
+        if selected_index is not None and isinstance(selected_index, int) and 0 <= selected_index < len(visible_matches):
+            selected_match = visible_matches[selected_index].model_dump()
         return search_workspace_response(
             source_type=source_type,
             saved_resume_name=saved_resume_name,
@@ -3644,6 +4058,7 @@ def build_app(
             filter_text=filter_text,
             selected_result_match=selected_match,
             status_text=search_status_text if selected_match is not None else "Select a job to review its details.",
+            wizard_step=4,
         )
 
     def save_selected_job_ui(
@@ -3684,6 +4099,7 @@ def build_app(
                 filter_text=filter_text,
                 selected_result_match=selected_result_match,
                 status_text=result["status"],
+                wizard_step=4,
             ),
             *saved_jobs_workspace_response(
                 saved_jobs_state=result["saved_jobs_state"],
@@ -3745,6 +4161,7 @@ def build_app(
             filter_text=filter_text,
             selected_result_match=selected_result_match,
             status_text=result.get("status", ""),
+            wizard_step=4,
         )
 
     def open_saved_jobs_tab_ui(
@@ -3816,7 +4233,7 @@ def build_app(
                 edit_mode=False,
                 delete_confirm=False,
             )
-            return (*saved_jobs_response, current_results_frame(matches_state, saved_jobs_state, sort_by, filter_text))
+            return saved_jobs_response
         if not delete_confirm:
             saved_jobs_response = saved_jobs_workspace_response(
                 saved_jobs_state=saved_jobs_state,
@@ -3825,7 +4242,7 @@ def build_app(
                 edit_mode=False,
                 delete_confirm=True,
             )
-            return (*saved_jobs_response, current_results_frame(matches_state, saved_jobs_state, sort_by, filter_text))
+            return saved_jobs_response
         result = controller.delete_saved_job(selected_saved_job_id)
         saved_jobs_response = saved_jobs_workspace_response(
             saved_jobs_state=result["saved_jobs_state"],
@@ -3834,7 +4251,7 @@ def build_app(
             edit_mode=False,
             delete_confirm=False,
         )
-        return (*saved_jobs_response, current_results_frame(matches_state, result["saved_jobs_state"], sort_by, filter_text))
+        return saved_jobs_response
 
     def cancel_delete_saved_job_ui(
         saved_jobs_state: list[dict[str, Any]] | None,
@@ -3896,7 +4313,7 @@ def build_app(
             edit_mode=False,
             delete_confirm=False,
         )
-        return (*saved_jobs_response, current_results_frame(matches_state, result["saved_jobs_state"], sort_by, filter_text))
+        return saved_jobs_response
 
     def create_saved_job_resume_ui(
         source_type: str,
@@ -3931,9 +4348,14 @@ def build_app(
     with gr.Blocks(title="Resume to Jobs Finder", css=APP_CSS) as demo:
         with gr.Group(visible=controller.setup_required()) as setup_group:
             gr.Markdown("# Resume to Jobs Finder")
-            gr.Markdown('<p class="setup-copy">Save your settings once, choose a resume source, and then move straight into job search.</p>')
-            setup_status = gr.HTML(_status_html("Provide the required keys and a starting resume source to continue."))
-            with gr.Accordion("AI Configuration", open=True):
+            gr.Markdown('<p class="setup-copy">Complete these steps to get started with your job search.</p>')
+            setup_status = gr.HTML("")
+            setup_wizard_step = gr.State(value=1)
+            setup_progress = gr.HTML(_setup_wizard_progress_html(1))
+
+            with gr.Group(visible=True) as setup_step_1:
+                gr.Markdown("### AI Configuration")
+                gr.Markdown('<p class="setup-copy">Connect your OpenAI account to power resume analysis and job matching.</p>')
                 setup_openai_api_key = gr.Textbox(label="OpenAI API key", type="password")
                 setup_openai_model = gr.Textbox(
                     label="Backend model",
@@ -3941,23 +4363,34 @@ def build_app(
                     placeholder="gpt-5",
                     info="Examples: gpt-5, gpt-5.4, gpt-4o",
                 )
-            with gr.Accordion("Job Search API", open=True):
+
+            with gr.Group(visible=False) as setup_step_2:
+                gr.Markdown("### Job Search API")
+                gr.Markdown('<p class="setup-copy">Connect SerpApi to search for jobs across Google Jobs.</p>')
                 setup_serpapi_api_key = gr.Textbox(label="SerpApi key", type="password")
-            with gr.Accordion("Resume Platform", open=True):
+
+            with gr.Group(visible=False) as setup_step_3:
+                gr.Markdown("### Resume")
+                gr.Markdown('<p class="setup-copy">Choose how to provide your resume for analysis.</p>')
                 setup_source_type = gr.Radio(
                     label="Initial resume source",
                     choices=[("PDF", "pdf"), ("Reactive Resume", "rxresume")],
                     value="pdf",
                 )
-                setup_rxresume_api_key = gr.Textbox(label="Reactive Resume API key", type="password")
+                setup_rxresume_api_key = gr.Textbox(label="Reactive Resume API key", type="password", visible=False)
                 setup_rxresume_api_url = gr.Textbox(
                     label="Reactive Resume API URL",
                     value=controller.default_rxresume_api_url(),
                     placeholder=DEFAULT_RXRESUME_RESUMES_URL,
+                    visible=False,
                 )
                 with gr.Group(visible=True) as setup_pdf_group:
                     setup_pdf_file = gr.File(label="Upload PDF resume", file_types=[".pdf"], type="filepath")
-            save_setup_button = gr.Button("Save setup and continue", variant="primary", interactive=False)
+
+            with gr.Row(elem_classes=["wizard-nav"]):
+                setup_back_button = gr.Button("Back", variant="secondary", visible=False)
+                setup_next_button = gr.Button("Next", variant="primary")
+                setup_finish_button = gr.Button("Save setup and continue", variant="primary", visible=False)
 
         with gr.Group(visible=not controller.setup_required()) as search_group:
             with gr.Row(elem_id="app-header"):
@@ -4016,14 +4449,6 @@ def build_app(
 
             with gr.Tabs(selected="job-search"):
                 with gr.Tab("Job Search", id="job-search"):
-                    gr.Markdown(
-                        '<p class="tab-copy">Move from resume selection to analysis, then refine the search and review the best-matching roles.</p>'
-                    )
-                    source_type = gr.Radio(
-                        label="Resume source",
-                        choices=[("PDF", "pdf"), ("Reactive Resume", "rxresume")],
-                        value=initial_source,
-                    )
                     rxresume_options_state = gr.State(value=[])
                     candidate_profile_state = gr.State(value=None)
                     analysis_token_state = gr.State(value="")
@@ -4032,12 +4457,19 @@ def build_app(
                     search_attempted_state = gr.State(value=False)
                     generated_artifacts_state = gr.State(value={})
                     selected_result_match_state = gr.State(value=None)
+                    search_wizard_step_state = gr.State(value=1)
 
                     search_status = gr.HTML(_status_html(initial_pdf_draft["status_text"]))
+                    search_wizard_progress = gr.HTML(_search_wizard_progress_html(1))
 
-                    with gr.Group(elem_classes=["step-card"]):
+                    with gr.Group(visible=True, elem_classes=["step-card"]) as search_step_1:
                         step_source_header = gr.HTML(
                             _step_header_html(1, "Resume Source", "Complete" if initial_pdf_draft["saved_resume_name"] else "Current")
+                        )
+                        source_type = gr.Radio(
+                            label="Resume source",
+                            choices=[("PDF", "pdf"), ("Reactive Resume", "rxresume")],
+                            value=initial_source,
                         )
                         resume_source_summary = gr.HTML(
                             _resume_source_summary_html(
@@ -4058,14 +4490,14 @@ def build_app(
                             load_resumes_button = gr.Button("Load resumes", variant="secondary")
                             rxresume_resume_id = gr.Dropdown(label="Reactive Resume entry", choices=[], value=None)
 
-                    with gr.Group(elem_classes=["step-card"]):
+                    with gr.Group(visible=False, elem_classes=["step-card"]) as search_step_2:
                         step_analyze_header = gr.HTML(
                             _step_header_html(2, "Analyze Resume", "Current" if initial_pdf_draft["saved_resume_name"] else "Ready")
                         )
                         candidate_summary = gr.HTML(_candidate_summary_html(None, location_used=""))
                         analyze_resume_button = gr.Button("Analyze resume", variant="primary")
 
-                    with gr.Group(elem_classes=["step-card"]):
+                    with gr.Group(visible=False, elem_classes=["step-card"]) as search_step_3:
                         step_preferences_header = gr.HTML(_step_header_html(3, "Search Preferences", "Ready"))
                         with gr.Row():
                             location_override = gr.Textbox(
@@ -4078,27 +4510,22 @@ def build_app(
                             lines=3,
                             placeholder="One search term per line, for example:\nMachine Learning Engineer\nApplied Scientist",
                         )
+                        find_jobs_button = gr.Button("Find jobs", variant="primary", interactive=False)
+
+                    with gr.Group(visible=False, elem_classes=["step-card"]) as search_step_4:
+                        step_results_header = gr.HTML(_step_header_html(4, "Results", "Ready"))
                         with gr.Row():
                             results_sort_by = gr.Dropdown(label="Sort by", choices=RESULT_SORT_CHOICES, value="Best match")
                             results_filter_text = gr.Textbox(
                                 label="Filter title or company",
                                 placeholder="Type to narrow the current result list",
                             )
-                        find_jobs_button = gr.Button("Find jobs", variant="primary", interactive=False)
-
-                    with gr.Group(elem_classes=["step-card"]):
-                        step_results_header = gr.HTML(_step_header_html(4, "Results", "Ready"))
-                        results_table = gr.Dataframe(
-                            value=_empty_results_frame(),
-                            headers=RESULTS_TABLE_HEADERS,
-                            interactive=False,
-                            datatype=["number", "str", "str", "str", "str", "str", "html", "str"],
-                            wrap=False,
-                            row_count=10,
-                            max_height=620,
-                            show_fullscreen_button=True,
-                            column_widths=[90, 220, 220, 190, 170, 180, 320, 100],
-                            elem_id="job-results-table",
+                        job_cards_display = gr.HTML("")
+                        job_selector = gr.Dropdown(
+                            label="Select a job to view details",
+                            choices=[],
+                            value=None,
+                            type="index",
                         )
                         with gr.Group(visible=False, elem_classes=["detail-card"]) as selected_job_group:
                             selected_job_detail = gr.HTML()
@@ -4112,6 +4539,10 @@ def build_app(
                             with gr.Row():
                                 resume_pdf_download = gr.File(label="Tailored resume PDF", visible=False)
                                 cover_letter_download = gr.File(label="Cover letter", visible=False)
+
+                    with gr.Row(elem_classes=["wizard-nav"]):
+                        search_back_button = gr.Button("Back", variant="secondary", visible=False)
+                        search_next_button = gr.Button("Next", variant="primary")
 
                 with gr.Tab(_saved_jobs_tab_label(initial_saved_jobs["count"]), id="saved-jobs") as saved_jobs_tab:
                     gr.Markdown(
@@ -4174,6 +4605,14 @@ def build_app(
                         saved_cover_letter_download = gr.File(label="Cover letter", visible=False)
 
         search_view_outputs = [
+            search_wizard_progress,
+            search_step_1,
+            search_step_2,
+            search_step_3,
+            search_step_4,
+            search_back_button,
+            search_next_button,
+            search_wizard_step_state,
             pdf_group,
             rxresume_group,
             saved_pdf_name,
@@ -4199,7 +4638,8 @@ def build_app(
             visible_matches_state,
             search_attempted_state,
             generated_artifacts_state,
-            results_table,
+            job_cards_display,
+            job_selector,
             selected_result_match_state,
             selected_job_group,
             selected_job_detail,
@@ -4249,22 +4689,40 @@ def build_app(
             saved_job_delete_confirm_state,
         ]
 
-        setup_source_type.change(toggle_setup_source, inputs=[setup_source_type], outputs=[setup_pdf_group], queue=False)
-        for component in (setup_openai_api_key, setup_serpapi_api_key, setup_rxresume_api_key, setup_source_type, setup_pdf_file):
-            component.change(
-                validate_setup_inputs,
-                inputs=[
-                    setup_openai_api_key,
-                    setup_serpapi_api_key,
-                    setup_rxresume_api_key,
-                    setup_source_type,
-                    setup_pdf_file,
-                ],
-                outputs=[save_setup_button, setup_status],
-                queue=False,
-            )
+        setup_source_type.change(
+            toggle_setup_source_fields,
+            inputs=[setup_source_type],
+            outputs=[setup_pdf_group, setup_rxresume_api_key, setup_rxresume_api_url],
+            queue=False,
+        )
 
-        save_setup_button.click(
+        setup_wizard_outputs = [
+            setup_status,
+            setup_wizard_step,
+            setup_progress,
+            setup_step_1,
+            setup_step_2,
+            setup_step_3,
+            setup_back_button,
+            setup_next_button,
+            setup_finish_button,
+        ]
+
+        setup_next_button.click(
+            setup_next_ui,
+            inputs=[setup_wizard_step, setup_openai_api_key, setup_serpapi_api_key],
+            outputs=setup_wizard_outputs,
+            queue=False,
+        )
+
+        setup_back_button.click(
+            setup_back_ui,
+            inputs=[setup_wizard_step],
+            outputs=setup_wizard_outputs,
+            queue=False,
+        )
+
+        setup_finish_button.click(
             save_setup_ui,
             inputs=[
                 setup_openai_api_key,
@@ -4496,9 +4954,10 @@ def build_app(
             queue=False,
         )
 
-        results_table.select(
-            select_job_result_ui,
+        job_selector.change(
+            select_job_from_cards_ui,
             inputs=[
+                job_selector,
                 source_type,
                 saved_pdf_name,
                 rxresume_resume_id,
@@ -4517,6 +4976,39 @@ def build_app(
                 search_status_text_state,
             ],
             outputs=search_view_outputs,
+            queue=False,
+        )
+
+        search_wizard_nav_outputs = [
+            search_status,
+            search_wizard_progress,
+            search_step_1,
+            search_step_2,
+            search_step_3,
+            search_step_4,
+            search_back_button,
+            search_next_button,
+            search_wizard_step_state,
+        ]
+
+        search_next_button.click(
+            search_wizard_next_ui,
+            inputs=[
+                search_wizard_step_state,
+                source_type,
+                saved_pdf_name,
+                rxresume_resume_id,
+                candidate_profile_state,
+                analysis_token_state,
+            ],
+            outputs=search_wizard_nav_outputs,
+            queue=False,
+        )
+
+        search_back_button.click(
+            search_wizard_back_ui,
+            inputs=[search_wizard_step_state],
+            outputs=search_wizard_nav_outputs,
             queue=False,
         )
 
@@ -4607,7 +5099,7 @@ def build_app(
                 results_sort_by,
                 results_filter_text,
             ],
-            outputs=[*saved_jobs_view_outputs, results_table],
+            outputs=saved_jobs_view_outputs,
             queue=False,
         )
 
@@ -4642,7 +5134,7 @@ def build_app(
                 results_sort_by,
                 results_filter_text,
             ],
-            outputs=[*saved_jobs_view_outputs, results_table],
+            outputs=saved_jobs_view_outputs,
             queue=False,
         )
 

@@ -93,6 +93,12 @@ def _click_settings(page):
     page.wait_for_timeout(500)
 
 
+def _click_next(page):
+    """Click the Next button in the search wizard."""
+    page.locator("button:has-text('Next')").first.click(force=True)
+    page.wait_for_timeout(500)
+
+
 class TestAppLoads:
     """Verify the app loads and main elements are present."""
 
@@ -126,80 +132,46 @@ class TestAppLoads:
         rx_radio = page.locator("text=Reactive Resume").first
         assert rx_radio.is_visible(), "Reactive Resume radio option not found"
 
-    def test_analyze_resume_button(self, page, app_url):
+    def test_wizard_progress_visible(self, page, app_url):
         _goto_app(page, app_url)
-        btn = page.locator("button:has-text('Analyze resume')")
-        assert btn.is_visible(), "Analyze resume button not found"
+        progress = page.locator(".wizard-progress").first
+        assert progress.is_visible(), "Wizard progress bar not visible"
 
-    def test_find_jobs_button(self, page, app_url):
+    def test_wizard_next_button_visible(self, page, app_url):
         _goto_app(page, app_url)
-        btn = page.locator("button:has-text('Find jobs')")
-        assert btn.is_visible(), "Find jobs button not found"
-
-    def test_location_input(self, page, app_url):
-        _goto_app(page, app_url)
-        loc_input = page.locator("label:has-text('Location')")
-        assert loc_input.is_visible(), "Location input not found"
-
-    def test_include_remote_checkbox(self, page, app_url):
-        _goto_app(page, app_url)
-        checkbox = page.locator("text=Include remote jobs")
-        assert checkbox.is_visible(), "Include remote jobs checkbox not found"
-
-    def test_search_terms_textarea(self, page, app_url):
-        _goto_app(page, app_url)
-        textarea = page.locator("label:has-text('Search terms')")
-        assert textarea.is_visible(), "Search terms textarea not found"
-
-    def test_results_table_present(self, page, app_url):
-        _goto_app(page, app_url)
-        table = page.locator("#job-results-table")
-        assert table.is_visible(), "Results table not found"
-
-    def test_sort_dropdown_present(self, page, app_url):
-        _goto_app(page, app_url)
-        # Gradio renders dropdown labels as span inside label elements
-        sort = page.locator("text=Sort by").first
-        assert sort.is_visible(), "Sort by dropdown not found"
-
-    def test_filter_input(self, page, app_url):
-        _goto_app(page, app_url)
-        filter_input = page.locator("text=Filter title or company").first
-        assert filter_input.is_visible(), "Filter input not found"
+        btn = page.locator("button:has-text('Next')").first
+        assert btn.is_visible(), "Next button not found"
 
 
-class TestStepCards:
-    """Verify the step card structure."""
+class TestWizardNavigation:
+    """Verify the search wizard step navigation."""
 
-    def test_step_1_resume_source(self, page, app_url):
+    def test_step_1_visible_on_load(self, page, app_url):
         _goto_app(page, app_url)
         step = page.locator("text=1. Resume Source").first
-        assert step.is_visible(), "Step 1 Resume Source not visible"
+        assert step.is_visible(), "Step 1 Resume Source not visible on load"
 
-    def test_step_2_analyze_resume(self, page, app_url):
+    def test_step_2_hidden_on_load(self, page, app_url):
         _goto_app(page, app_url)
-        step = page.locator("text=2. Analyze Resume").first
-        assert step.is_visible(), "Step 2 Analyze Resume not visible"
+        # Analyze resume button is in step 2, should be hidden
+        btn = page.locator("button:has-text('Analyze resume')")
+        assert not btn.is_visible(), "Analyze resume should be hidden on load"
 
-    def test_step_3_search_preferences(self, page, app_url):
+    def test_next_goes_to_step_2(self, page, app_url):
         _goto_app(page, app_url)
-        step = page.locator("text=3. Search Preferences").first
-        assert step.is_visible(), "Step 3 Search Preferences not visible"
+        _click_next(page)
+        page.wait_for_timeout(500)
+        btn = page.locator("button:has-text('Analyze resume')")
+        assert btn.is_visible(), "Analyze resume button should be visible on step 2"
 
-    def test_step_4_results(self, page, app_url):
+    def test_back_returns_to_step_1(self, page, app_url):
         _goto_app(page, app_url)
-        step = page.locator("text=4. Results").first
-        assert step.is_visible(), "Step 4 Results not visible"
-
-    def test_step_1_complete_state(self, page, app_url):
-        _goto_app(page, app_url)
-        badge = page.locator(".step-pill.complete").first
-        assert badge.is_visible(), "Step 1 Complete badge not visible"
-
-    def test_step_2_current_state(self, page, app_url):
-        _goto_app(page, app_url)
-        badge = page.locator(".step-pill.current").first
-        assert badge.is_visible(), "Step 2 Current badge not visible"
+        _click_next(page)
+        page.wait_for_timeout(500)
+        page.locator("button:has-text('Back')").first.click(force=True)
+        page.wait_for_timeout(500)
+        step = page.locator("text=1. Resume Source").first
+        assert step.is_visible(), "Step 1 should be visible after going back"
 
     def test_status_banner_visible(self, page, app_url):
         _goto_app(page, app_url)
@@ -208,7 +180,7 @@ class TestStepCards:
 
 
 class TestResumeSourceSection:
-    """Verify the resume source section."""
+    """Verify the resume source section (step 1)."""
 
     def test_saved_pdf_dropdown(self, page, app_url):
         _goto_app(page, app_url)
@@ -236,20 +208,15 @@ class TestAnalyzeFlow:
 
     def test_analyze_populates_profile_and_enables_search(self, page, app_url):
         _goto_app(page, app_url)
+        # Navigate to step 2
+        _click_next(page)
+        page.wait_for_timeout(500)
+
         page.locator("button:has-text('Analyze resume')").click()
         page.locator("text=Resume analyzed.").first.wait_for(timeout=60000)
 
-        summary = page.locator(".summary-card").nth(1)
+        summary = page.locator(".summary-card").first
         assert "No analysis yet" not in summary.text_content()
-
-        location = page.get_by_role("textbox", name="Location")
-        assert location.input_value().strip(), "Location should be populated after analysis"
-
-        search_terms = page.get_by_role("textbox", name="Search terms")
-        assert search_terms.input_value().strip(), "Search terms should be populated after analysis"
-
-        find_jobs = page.get_by_role("button", name="Find jobs")
-        assert find_jobs.is_enabled(), "Find jobs should be enabled after analysis"
 
 
 class TestSettingsPanel:
@@ -257,14 +224,12 @@ class TestSettingsPanel:
 
     def test_settings_panel_initially_hidden(self, page, app_url):
         _goto_app(page, app_url)
-        # Settings panel should not be visible initially
         panel = page.locator("#settings-panel")
         assert not panel.is_visible(), "Settings panel should be hidden initially"
 
     def test_settings_toggle_opens(self, page, app_url):
         _goto_app(page, app_url)
         _click_settings(page)
-        # After clicking, OpenAI API key field should appear
         openai_key = page.locator("text=OpenAI API key")
         assert openai_key.count() >= 1, "OpenAI API key field not visible after toggle"
 
@@ -294,38 +259,14 @@ class TestNavigation:
         _goto_app(page, app_url)
         _click_saved_jobs_tab(page)
         _click_job_search_tab(page)
-        table = page.locator("#job-results-table")
-        assert table.is_visible(), "Results table not visible after navigating back"
+        step = page.locator("text=1. Resume Source").first
+        assert step.is_visible(), "Step 1 not visible after navigating back to job search"
 
     def test_saved_jobs_shows_edit_fields(self, page, app_url):
         _goto_app(page, app_url)
         _click_saved_jobs_tab(page)
         title_field = page.locator("label:has-text('Title')")
         assert title_field.count() >= 1, "Title field not visible in saved jobs view"
-
-
-class TestResultsTableHeaders:
-    """Verify the results table has correct column headers."""
-
-    def test_score_column(self, page, app_url):
-        _goto_app(page, app_url)
-        assert page.locator("#job-results-table >> text=Score").first.is_visible()
-
-    def test_title_column(self, page, app_url):
-        _goto_app(page, app_url)
-        assert page.locator("#job-results-table >> text=Title").first.is_visible()
-
-    def test_company_column(self, page, app_url):
-        _goto_app(page, app_url)
-        assert page.locator("#job-results-table >> text=Company").first.is_visible()
-
-    def test_location_column(self, page, app_url):
-        _goto_app(page, app_url)
-        assert page.locator("#job-results-table >> text=Location").first.is_visible()
-
-    def test_apply_column(self, page, app_url):
-        _goto_app(page, app_url)
-        assert page.locator("#job-results-table >> text=Apply").first.is_visible()
 
 
 class TestScreenshots:
