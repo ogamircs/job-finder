@@ -3533,7 +3533,7 @@ def build_app(
                 gr.update(visible=True), gr.update(visible=True, value="Find Jobs"),
                 3,
             )
-        # Step 3 → 4 is handled by find_jobs_ui, not the Next button
+        # Step 3 → 4 is handled by search_next_or_find_jobs_ui wrapper
         return (
             "",
             _search_wizard_progress_html(wizard_step),
@@ -3554,6 +3554,74 @@ def build_app(
             gr.update(visible=prev_step > 1), gr.update(visible=prev_step < 4, value=next_label),
             prev_step,
         )
+
+    def search_next_or_find_jobs_ui(
+        wizard_step: int,
+        source_type: str,
+        saved_resume_name: str | None,
+        rxresume_resume_id: str,
+        candidate_profile: dict[str, Any] | None,
+        analysis_token: str,
+        rxresume_options_state: list[Any] | None,
+        saved_jobs_state: list[dict[str, Any]] | None,
+        location_override: str,
+        include_remote: bool,
+        search_terms_text: str,
+        sort_by: str,
+        filter_text: str,
+        openai_model: str,
+        rxresume_base_url: str,
+    ) -> tuple[Any, ...]:
+        """Unified handler for the bottom wizard Next / Find Jobs button."""
+        if wizard_step == 3:
+            return find_jobs_ui(
+                source_type=source_type,
+                saved_resume_name=saved_resume_name,
+                rxresume_resume_id=rxresume_resume_id,
+                rxresume_options_state=rxresume_options_state,
+                saved_jobs_state=saved_jobs_state,
+                location_override=location_override,
+                include_remote=include_remote,
+                search_terms_text=search_terms_text,
+                candidate_profile=candidate_profile,
+                analysis_token=analysis_token,
+                sort_by=sort_by,
+                filter_text=filter_text,
+                openai_model=openai_model,
+                rxresume_base_url=rxresume_base_url,
+            )
+        nav_result = search_wizard_next_ui(
+            wizard_step, source_type, saved_resume_name,
+            rxresume_resume_id, candidate_profile, analysis_token,
+        )
+        # Pad nav-only result (9 items) to full search_view_outputs (43 items)
+        padding = tuple(gr.update() for _ in range(43 - len(nav_result)))
+        return nav_result + padding
+
+    def refresh_job_cards_on_tab_select(
+        matches_state: list[dict[str, Any]] | None,
+        saved_jobs_state: list[dict[str, Any]] | None,
+        sort_by: str,
+        filter_text: str,
+        selected_result_match: dict[str, Any] | None,
+    ) -> str:
+        """Re-render job cards HTML when switching back to Job Search tab."""
+        visible_matches = _filter_and_sort_matches(
+            matches_from_state(matches_state),
+            sort_by=sort_by or "Best match",
+            filter_text=filter_text or "",
+        )
+        selected_index: int | None = None
+        if selected_result_match is not None:
+            try:
+                sel_key = saved_job_identity(ScoredJobMatch.model_validate(selected_result_match))
+                for idx, vm in enumerate(visible_matches):
+                    if saved_job_identity(vm) == sel_key:
+                        selected_index = idx
+                        break
+            except Exception:
+                pass
+        return _job_cards_html(visible_matches, saved_jobs_state=saved_jobs_state, selected_index=selected_index)
 
     def toggle_settings_ui(current_visible: bool) -> tuple[bool, dict[str, Any]]:
         next_visible = not current_visible
@@ -4448,7 +4516,7 @@ def build_app(
             saved_job_delete_confirm_state = gr.State(value=False)
 
             with gr.Tabs(selected="job-search"):
-                with gr.Tab("Job Search", id="job-search"):
+                with gr.Tab("Job Search", id="job-search") as job_search_tab:
                     rxresume_options_state = gr.State(value=[])
                     candidate_profile_state = gr.State(value=None)
                     analysis_token_state = gr.State(value="")
@@ -4992,7 +5060,7 @@ def build_app(
         ]
 
         search_next_button.click(
-            search_wizard_next_ui,
+            search_next_or_find_jobs_ui,
             inputs=[
                 search_wizard_step_state,
                 source_type,
@@ -5000,9 +5068,17 @@ def build_app(
                 rxresume_resume_id,
                 candidate_profile_state,
                 analysis_token_state,
+                rxresume_options_state,
+                saved_jobs_state,
+                location_override,
+                include_remote,
+                search_terms_text,
+                results_sort_by,
+                results_filter_text,
+                settings_openai_model,
+                settings_rxresume_api_url,
             ],
-            outputs=search_wizard_nav_outputs,
-            queue=False,
+            outputs=search_view_outputs,
         )
 
         search_back_button.click(
@@ -5151,6 +5227,19 @@ def build_app(
                 settings_rxresume_api_url,
             ],
             outputs=saved_jobs_view_outputs,
+        )
+
+        job_search_tab.select(
+            refresh_job_cards_on_tab_select,
+            inputs=[
+                matches_state,
+                saved_jobs_state,
+                results_sort_by,
+                results_filter_text,
+                selected_result_match_state,
+            ],
+            outputs=[job_cards_display],
+            queue=False,
         )
 
     demo.queue(default_concurrency_limit=2)
