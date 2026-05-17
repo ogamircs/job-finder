@@ -56,6 +56,14 @@ class SavedJobsStore:
         connection.row_factory = sqlite3.Row
         return connection
 
+    _APPLICATION_COLUMNS: tuple[tuple[str, str], ...] = (
+        ("application_status", "TEXT NOT NULL DEFAULT ''"),
+        ("application_run_id", "TEXT NOT NULL DEFAULT ''"),
+        ("application_run_path", "TEXT NOT NULL DEFAULT ''"),
+        ("last_applied_at", "TEXT NOT NULL DEFAULT ''"),
+        ("application_error", "TEXT NOT NULL DEFAULT ''"),
+    )
+
     def _ensure_schema(self) -> None:
         with self._connect() as connection:
             connection.executescript(
@@ -80,16 +88,42 @@ class SavedJobsStore:
                     matched_skills TEXT NOT NULL DEFAULT '[]',
                     missing_signals TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    application_status TEXT NOT NULL DEFAULT '',
+                    application_run_id TEXT NOT NULL DEFAULT '',
+                    application_run_path TEXT NOT NULL DEFAULT '',
+                    last_applied_at TEXT NOT NULL DEFAULT '',
+                    application_error TEXT NOT NULL DEFAULT ''
                 );
                 """
             )
+            self._migrate_add_columns(connection)
+
+    def _migrate_add_columns(self, connection: sqlite3.Connection) -> None:
+        for column_name, column_decl in self._APPLICATION_COLUMNS:
+            try:
+                connection.execute(
+                    f"ALTER TABLE saved_jobs ADD COLUMN {column_name} {column_decl}"
+                )
+            except sqlite3.OperationalError as exc:
+                # Only swallow the duplicate-column case; surface anything else
+                # (database locked, disk I/O error, malformed schema) so callers
+                # see the real failure instead of a silent corruption.
+                if "duplicate column" not in str(exc).casefold():
+                    raise
+                continue
 
     def _row_to_record(self, row: sqlite3.Row) -> SavedJobRecord:
+        keys = set(row.keys())
         return SavedJobRecord(
             id=int(row["id"]),
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
+            application_status=str(row["application_status"]) if "application_status" in keys else "",
+            application_run_id=str(row["application_run_id"]) if "application_run_id" in keys else "",
+            application_run_path=str(row["application_run_path"]) if "application_run_path" in keys else "",
+            last_applied_at=str(row["last_applied_at"]) if "last_applied_at" in keys else "",
+            application_error=str(row["application_error"]) if "application_error" in keys else "",
             match=ScoredJobMatch(
                 job=JobPosting(
                     provider=str(row["provider"]),
@@ -298,3 +332,45 @@ class SavedJobsStore:
                 (int(saved_job_id),),
             )
         return cursor.rowcount > 0
+
+    def update_application_status(
+        self,
+        saved_job_id: int,
+        *,
+        status: str = "",
+        run_id: str = "",
+        run_path: str = "",
+        last_applied_at: str = "",
+        error: str = "",
+    ) -> SavedJobRecord | None:
+        saved_job_id = int(saved_job_id)
+        now = _timestamp()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE saved_jobs
+                SET application_status = ?,
+                    application_run_id = ?,
+                    application_run_path = ?,
+                    last_applied_at = ?,
+                    application_error = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    str(status or "").strip(),
+                    str(run_id or "").strip(),
+                    str(run_path or "").strip(),
+                    str(last_applied_at or "").strip(),
+                    str(error or "").strip(),
+                    now,
+                    saved_job_id,
+                ),
+            )
+            if cursor.rowcount == 0:
+                return None
+            row = connection.execute(
+                "SELECT * FROM saved_jobs WHERE id = ?",
+                (saved_job_id,),
+            ).fetchone()
+        return self._row_to_record(row) if row is not None else None

@@ -42,6 +42,33 @@ uv run job-finder
 - `Find jobs` stays disabled until the currently selected resume has been analyzed.
 - The results table includes a `pay_range` column when salary data is present in SerpApi results.
 
+## Auto-apply (experimental)
+
+The saved-jobs tab can drive a browser agent ([Browser Use](https://github.com/browser-use/browser-use)) through job application forms using a tailored resume + cover letter.
+
+Setup (one-time):
+
+```bash
+uv sync --python 3.11 --all-groups
+uv run playwright install chromium
+```
+
+In the app:
+
+1. Open `Settings → Applicant profile (for Auto-apply)` and fill at least **Full name** and **Email**. The agent uses these answers as the source of truth — it never invents history not present here.
+2. Save a job from the search results into the Saved jobs tab.
+3. Select the saved job. Pick an `Apply mode`:
+   - **Attended (pause before submit)** — default. A visible Chromium opens, the agent fills every field, then stops before clicking Submit so you can review and submit yourself.
+   - **Auto-submit** — agent fills and clicks Submit. Use only on forms you trust.
+4. Click `Auto-apply`. Generated artifacts (tailored PDF, cover letter, transcript, screenshots, `apply_result.json`) land in `output/generated/<timestamp>-<company>-<title>/`. The status surfaces in the panel and the run directory is shown.
+
+Caveats:
+
+- Aggregator login walls (LinkedIn / Indeed Easy Apply / Glassdoor) typically block headless agents — prefer company career URLs and use Attended mode.
+- CAPTCHA / Cloudflare interstitials will pause the agent; Attended mode lets you solve them and continue.
+- OAuth / SSO sign-in walls are out of scope.
+- `output/generated/` is already in `.gitignore`; transcripts may contain PII — keep the directory local.
+
 ## Support
 
 If you enjoy this, buy me some tokens: [buymeacoffee.com/amircs](https://buymeacoffee.com/amircs)

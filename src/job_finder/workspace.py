@@ -4,6 +4,10 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .models import ApplicantProfile
 
 ENV_KEYS = (
     "OPENAI_API_KEY",
@@ -27,10 +31,12 @@ class LocalWorkspace:
         env_path: Path | str = ".env",
         resume_dir: Path | str = ".resume",
         saved_jobs_db_path: Path | str = ".saved_jobs.sqlite3",
+        applicant_profile_path: Path | str = ".applicant_profile.json",
     ) -> None:
         self.env_path = Path(env_path)
         self.resume_dir = Path(resume_dir)
         self.saved_jobs_db_path = Path(saved_jobs_db_path)
+        self.applicant_profile_path = Path(applicant_profile_path)
 
     def env_exists(self) -> bool:
         return self.env_path.exists()
@@ -90,3 +96,24 @@ class LocalWorkspace:
         if not path.exists():
             return None
         return SavedResume(name=path.name, path=path)
+
+    def load_applicant_profile(self) -> "ApplicantProfile":
+        from .models import ApplicantProfile
+
+        if not self.applicant_profile_path.exists():
+            return ApplicantProfile()
+        raw = self.applicant_profile_path.read_text(encoding="utf-8")
+        if not raw.strip():
+            return ApplicantProfile()
+        return ApplicantProfile.model_validate_json(raw)
+
+    def save_applicant_profile(self, profile: "ApplicantProfile") -> "ApplicantProfile":
+        from .models import ApplicantProfile
+
+        normalized = ApplicantProfile.model_validate(profile)
+        self.applicant_profile_path.parent.mkdir(parents=True, exist_ok=True)
+        self.applicant_profile_path.write_text(
+            normalized.model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+        return normalized

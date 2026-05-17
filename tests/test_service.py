@@ -79,6 +79,41 @@ class FakeService:
             "cover_letter_path": "/tmp/cover_letter.md",
         }
 
+    def run_auto_apply(self, **kwargs):
+        from job_finder.auto_apply import ApplyRunMode, ApplyRunResult
+        from job_finder.models import GeneratedApplicationArtifacts
+
+        if not hasattr(self, "auto_apply_calls"):
+            self.auto_apply_calls = []
+        self.auto_apply_calls.append(kwargs)
+        artifacts = GeneratedApplicationArtifacts(
+            base_resume_id=kwargs.get("rxresume_resume_id", ""),
+            remote_resume_id="remote-1",
+            company="Acme AI",
+            job_title="Machine Learning Engineer",
+            generated_at="2026-05-17T10:00:00Z",
+            artifact_dir="/tmp/output/generated/run",
+            pdf_url="https://example.com/pdf",
+            pdf_path="/tmp/tailored_resume.pdf",
+            cover_letter_path="/tmp/cover_letter.md",
+            resume_json_path="/tmp/resume.json",
+            metadata_path="/tmp/metadata.json",
+        )
+        mode_value = kwargs.get("mode")
+        mode = mode_value if isinstance(mode_value, ApplyRunMode) else ApplyRunMode(str(mode_value or "attended"))
+        result = ApplyRunResult(
+            status="needs_review" if mode == ApplyRunMode.ATTENDED else "success",
+            mode=mode,
+            apply_url="https://example.com/jobs/1",
+            run_id="run-abc",
+            run_dir="/tmp/output/generated/run/apply_run",
+            transcript_path="/tmp/output/generated/run/apply_run/transcript.json",
+            screenshots_dir="/tmp/output/generated/run/apply_run/screenshots",
+            started_at="2026-05-17T10:00:00Z",
+            finished_at="2026-05-17T10:05:00Z",
+        )
+        return artifacts, result
+
 
 def test_controller_loads_rxresume_options():
     service = FakeService()
@@ -294,3 +329,140 @@ def test_controller_updates_and_deletes_saved_jobs(tmp_path):
     assert delete_result["deleted"] is True
     assert delete_result["rows"] == []
     assert delete_result["saved_jobs_button_label"] == "Saved Jobs (0)"
+
+
+def test_controller_auto_apply_requires_full_name_and_email(tmp_path):
+    workspace = LocalWorkspace(
+        env_path=tmp_path / ".env",
+        resume_dir=tmp_path / ".resume",
+        saved_jobs_db_path=tmp_path / "saved_jobs.sqlite3",
+        applicant_profile_path=tmp_path / ".applicant_profile.json",
+    )
+    service = FakeService()
+    controller = AppController(
+        service,
+        workspace=workspace,
+        saved_jobs_store=SavedJobsStore(workspace.saved_jobs_db_path),
+    )
+
+    saved = controller.save_saved_job(make_match().model_dump())["saved_job"]
+
+    result = controller.auto_apply_saved_job(
+        saved["id"],
+        mode="attended",
+        rxresume_base_url="https://rxresu.me/api/openapi/resumes",
+        rxresume_resume_id="resume-1",
+        candidate_profile=make_profile().model_dump(),
+    )
+
+    assert "full name and email" in result["status"].lower()
+    assert result["apply_result"] is None
+    assert not getattr(service, "auto_apply_calls", [])
+
+
+def test_controller_auto_apply_saved_job_persists_status(tmp_path):
+    from job_finder.models import ApplicantProfile
+
+    workspace = LocalWorkspace(
+        env_path=tmp_path / ".env",
+        resume_dir=tmp_path / ".resume",
+        saved_jobs_db_path=tmp_path / "saved_jobs.sqlite3",
+        applicant_profile_path=tmp_path / ".applicant_profile.json",
+    )
+    workspace.save_applicant_profile(
+        ApplicantProfile(full_name="Ada Lovelace", email="ada@example.com")
+    )
+    service = FakeService()
+    store = SavedJobsStore(workspace.saved_jobs_db_path)
+    controller = AppController(service, workspace=workspace, saved_jobs_store=store)
+
+    saved = controller.save_saved_job(make_match().model_dump())["saved_job"]
+
+    result = controller.auto_apply_saved_job(
+        saved["id"],
+        mode="attended",
+        rxresume_base_url="https://rxresu.me/api/openapi/resumes",
+        rxresume_resume_id="resume-1",
+        candidate_profile=make_profile().model_dump(),
+    )
+
+    assert result["apply_result"]["status"] == "needs_review"
+    assert result["apply_result"]["run_dir"].endswith("apply_run")
+    assert "Auto-apply paused for review" in result["status"]
+
+    reloaded = store.get_job(saved["id"])
+    assert reloaded.application_status == "needs_review"
+    assert reloaded.application_run_id == "run-abc"
+    assert reloaded.application_run_path.endswith("apply_run")
+    assert service.auto_apply_calls[0]["rxresume_resume_id"] == "resume-1"
+
+
+def test_controller_auto_apply_requires_candidate_profile(tmp_path):
+    from job_finder.models import ApplicantProfile
+
+    workspace = LocalWorkspace(
+        env_path=tmp_path / ".env",
+        resume_dir=tmp_path / ".resume",
+        saved_jobs_db_path=tmp_path / "saved_jobs.sqlite3",
+        applicant_profile_path=tmp_path / ".applicant_profile.json",
+    )
+    workspace.save_applicant_profile(
+        ApplicantProfile(full_name="Ada Lovelace", email="ada@example.com")
+    )
+    service = FakeService()
+    controller = AppController(
+        service,
+        workspace=workspace,
+        saved_jobs_store=SavedJobsStore(workspace.saved_jobs_db_path),
+    )
+    saved = controller.save_saved_job(make_match().model_dump())["saved_job"]
+
+    result = controller.auto_apply_saved_job(
+        saved["id"],
+        mode="attended",
+        candidate_profile=None,
+    )
+
+    assert "Analyze a resume" in result["status"]
+    assert result["apply_result"] is None
+
+
+def test_controller_auto_apply_persists_failed_status_on_service_exception(tmp_path):
+    from job_finder.models import ApplicantProfile
+
+    workspace = LocalWorkspace(
+        env_path=tmp_path / ".env",
+        resume_dir=tmp_path / ".resume",
+        saved_jobs_db_path=tmp_path / "saved_jobs.sqlite3",
+        applicant_profile_path=tmp_path / ".applicant_profile.json",
+    )
+    workspace.save_applicant_profile(
+        ApplicantProfile(full_name="Ada Lovelace", email="ada@example.com")
+    )
+
+    class ExplodingService(FakeService):
+        def run_auto_apply(self, **kwargs):
+            raise RuntimeError("boom")
+
+    service = ExplodingService()
+    store = SavedJobsStore(workspace.saved_jobs_db_path)
+    controller = AppController(service, workspace=workspace, saved_jobs_store=store)
+    saved = controller.save_saved_job(make_match().model_dump())["saved_job"]
+
+    # Pre-seed an old status to confirm it gets overwritten.
+    store.update_application_status(
+        saved["id"], status="needs_review", run_id="old-run", run_path="/tmp/old"
+    )
+
+    result = controller.auto_apply_saved_job(
+        saved["id"],
+        mode="attended",
+        candidate_profile=make_profile().model_dump(),
+    )
+
+    assert "Auto-apply failed" in result["status"]
+    reloaded = store.get_job(saved["id"])
+    assert reloaded.application_status == "failed"
+    assert "boom" in reloaded.application_error
+    assert reloaded.application_run_id == ""
+    assert reloaded.application_run_path == ""

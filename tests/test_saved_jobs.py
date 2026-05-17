@@ -120,3 +120,112 @@ def test_saved_jobs_store_returns_missing_status_for_update_and_delete(tmp_path:
 
     assert store.update_job(999, make_match()) is None
     assert store.delete_job(999) is False
+
+
+def test_saved_jobs_store_migrates_legacy_db_without_application_columns(tmp_path: Path):
+    import sqlite3
+
+    db_path = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(db_path) as legacy:
+        legacy.executescript(
+            """
+            CREATE TABLE saved_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dedupe_key TEXT NOT NULL UNIQUE,
+                provider TEXT NOT NULL,
+                provider_job_id TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL,
+                company TEXT NOT NULL,
+                location TEXT NOT NULL DEFAULT '',
+                pay_range TEXT NOT NULL DEFAULT '',
+                via TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                posted_at TEXT NOT NULL DEFAULT '',
+                remote_flag INTEGER NOT NULL DEFAULT 0,
+                apply_url TEXT NOT NULL,
+                share_url TEXT NOT NULL DEFAULT '',
+                score_10 INTEGER NOT NULL,
+                rationale TEXT NOT NULL DEFAULT '',
+                matched_skills TEXT NOT NULL DEFAULT '[]',
+                missing_signals TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
+        legacy.execute(
+            "INSERT INTO saved_jobs (dedupe_key, provider, title, company, apply_url, score_10, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "legacy-key",
+                "serpapi_google_jobs",
+                "Legacy Role",
+                "Legacy Co",
+                "https://example.com/legacy",
+                7,
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+
+    # Instantiating the store should ALTER TABLE in the new columns idempotently.
+    store = SavedJobsStore(db_path)
+    SavedJobsStore(db_path)  # second instantiation must not raise
+
+    with sqlite3.connect(db_path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(saved_jobs)").fetchall()}
+    assert {
+        "application_status",
+        "application_run_id",
+        "application_run_path",
+        "last_applied_at",
+        "application_error",
+    }.issubset(columns)
+
+    records = store.list_jobs()
+    assert len(records) == 1
+    assert records[0].application_status == ""
+
+
+def test_update_application_status_roundtrips(tmp_path: Path):
+    store = SavedJobsStore(tmp_path / "saved_jobs.sqlite3")
+    record = store.save_match(make_match()).record
+
+    updated = store.update_application_status(
+        record.id,
+        status="needs_review",
+        run_id="run-abc123",
+        run_path="/tmp/output/run",
+        last_applied_at="2026-05-17T10:00:00Z",
+        error="",
+    )
+
+    assert updated is not None
+    assert updated.application_status == "needs_review"
+    assert updated.application_run_id == "run-abc123"
+    assert updated.application_run_path == "/tmp/output/run"
+    assert updated.last_applied_at == "2026-05-17T10:00:00Z"
+
+    reloaded = store.get_job(record.id)
+    assert reloaded.application_status == "needs_review"
+
+
+def test_update_application_status_returns_none_when_missing(tmp_path: Path):
+    store = SavedJobsStore(tmp_path / "saved_jobs.sqlite3")
+    assert store.update_application_status(404, status="failed") is None
+
+
+def test_migrate_add_columns_reraises_non_duplicate_operational_errors(tmp_path: Path):
+    import sqlite3
+    import pytest
+
+    store = SavedJobsStore(tmp_path / "saved_jobs.sqlite3")
+
+    class _BoomConnection:
+        def execute(self, sql, *args, **kwargs):
+            if "ALTER TABLE" in sql:
+                raise sqlite3.OperationalError("database is locked")
+            return None
+
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        store._migrate_add_columns(_BoomConnection())
