@@ -228,6 +228,59 @@ def test_runner_auto_submit_records_success_and_sidecar(tmp_path):
     assert sidecar["final_url"] == "https://careers.acme.ai/done"
 
 
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "Form filled but not submitted; awaiting human.",
+        "Agent failed to submit the application.",
+        "Could not submit because submit button was disabled.",
+        "Submission failed after the email field.",
+        "Did not submit; ran out of steps.",
+    ],
+)
+def test_runner_auto_submit_negated_submit_phrases_are_failed(tmp_path, summary):
+    """Regression for PR #4 Codex P1: negated submit phrases must NOT map to success."""
+
+    def factory(**_factory_kwargs):
+        def _run(_prompt: str):
+            return {"final_result": summary}
+
+        return _run
+
+    runner = AutoApplyRunner(browser_agent_factory=factory)
+    result = runner.run(
+        match=make_match(),
+        artifacts=make_artifacts(tmp_path),
+        profile=make_profile(),
+        mode=ApplyRunMode.AUTO_SUBMIT,
+        openai_api_key="sk-test",
+        openai_model="gpt-4o",
+        output_dir=tmp_path,
+    )
+
+    assert result.status == "failed", f"expected failed for summary: {summary!r}"
+
+
+def test_runner_auto_submit_explicit_success_cue_records_success(tmp_path):
+    def factory(**_factory_kwargs):
+        def _run(_prompt: str):
+            return {"final_result": "Application submitted; confirmation page shown."}
+
+        return _run
+
+    runner = AutoApplyRunner(browser_agent_factory=factory)
+    result = runner.run(
+        match=make_match(),
+        artifacts=make_artifacts(tmp_path),
+        profile=make_profile(),
+        mode=ApplyRunMode.AUTO_SUBMIT,
+        openai_api_key="sk-test",
+        openai_model="gpt-4o",
+        output_dir=tmp_path,
+    )
+    assert result.status == "success"
+
+
 def test_runner_auto_submit_without_explicit_signal_defaults_to_needs_review(tmp_path):
     """Regression: auto_submit must NOT optimistically record success when
     Browser Use returned no explicit success indicator."""

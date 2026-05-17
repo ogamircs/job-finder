@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import traceback
 import uuid
 from datetime import datetime, timezone
@@ -309,6 +310,29 @@ def _extract_final_url(payload: dict[str, Any]) -> str:
     return ""
 
 
+_NEGATED_SUBMIT_PATTERNS = (
+    re.compile(r"\bnot\s+submitted\b"),
+    re.compile(r"\bdid\s+not\s+submit\b"),
+    re.compile(r"\bfailed\s+to\s+submit\b"),
+    re.compile(r"\bcould\s+not\s+submit\b"),
+    re.compile(r"\bunable\s+to\s+submit\b"),
+    re.compile(r"\bsubmission\s+failed\b"),
+    re.compile(r"\bsubmit\s+failed\b"),
+    re.compile(r"\bno\s+success\s+screen\b"),
+    re.compile(r"\bnever\s+submitted\b"),
+)
+
+_SUCCESS_CUE_PATTERNS = (
+    re.compile(r"\bapplication\s+submitted\b"),
+    re.compile(r"\bsubmitted\s+successfully\b"),
+    re.compile(r"\bsuccessfully\s+submitted\b"),
+    re.compile(r"\bsuccessfully\s+applied\b"),
+    re.compile(r"\bapplication\s+sent\b"),
+    re.compile(r"\bconfirmation\s+(?:page|screen)\s+shown\b"),
+    re.compile(r"\bsuccess\s+screen\b"),
+)
+
+
 def _extract_status(payload: dict[str, Any], mode: ApplyRunMode) -> str:
     indicated = str(payload.get("status") or "").strip().casefold()
     if indicated in {"success", "submitted", "completed"}:
@@ -321,7 +345,12 @@ def _extract_status(payload: dict[str, Any], mode: ApplyRunMode) -> str:
     summary = str(payload.get("summary") or payload.get("final_result") or "").casefold()
     if "captcha" in summary or "blocker" in summary or "login wall" in summary:
         return "failed"
-    if "submitted" in summary or "success screen" in summary:
+
+    # Free-text fallback. Check negation first so "not submitted" / "failed to
+    # submit" don't get treated as success.
+    if any(pattern.search(summary) for pattern in _NEGATED_SUBMIT_PATTERNS):
+        return "failed"
+    if any(pattern.search(summary) for pattern in _SUCCESS_CUE_PATTERNS):
         return "success" if mode == ApplyRunMode.AUTO_SUBMIT else "needs_review"
 
     # No explicit success signal — default to needs_review for BOTH modes so we
