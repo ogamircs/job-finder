@@ -261,6 +261,33 @@ def test_runner_auto_submit_negated_submit_phrases_are_failed(tmp_path, summary)
     assert result.status == "failed", f"expected failed for summary: {summary!r}"
 
 
+def test_runner_explicit_status_field_is_overridden_by_summary_negation(tmp_path):
+    """Regression: a payload that claims status=submitted but whose prose says
+    'never submitted' / 'failed to submit' must be persisted as failed."""
+
+    def factory(**_factory_kwargs):
+        def _run(_prompt: str):
+            return {
+                "status": "submitted",
+                "final_result": "Filled the form, but never submitted because the Submit button was disabled.",
+            }
+
+        return _run
+
+    runner = AutoApplyRunner(browser_agent_factory=factory)
+    result = runner.run(
+        match=make_match(),
+        artifacts=make_artifacts(tmp_path),
+        profile=make_profile(),
+        mode=ApplyRunMode.AUTO_SUBMIT,
+        openai_api_key="sk-test",
+        openai_model="gpt-4o",
+        output_dir=tmp_path,
+    )
+
+    assert result.status == "failed"
+
+
 def test_runner_auto_submit_explicit_success_cue_records_success(tmp_path):
     def factory(**_factory_kwargs):
         def _run(_prompt: str):

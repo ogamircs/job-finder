@@ -246,7 +246,15 @@ def default_browser_agent_factory(
         if resume_path:
             @tools.action(description="Upload the tailored resume PDF to the focused upload field")
             async def upload_resume(browser_session):  # noqa: ANN001 - browser_use injects session
-                return UploadFileAction(path=resume_path, index=0)
+                # browser_use custom actions must return str | ActionResult | None.
+                # UploadFileAction is the *param* model for the built-in upload_file
+                # action, not a valid return value. Mirror the upstream example
+                # (browser-use/examples/use-cases/apply_to_job.py:43) which returns
+                # a status string while the agent itself invokes the built-in
+                # upload_file_to_element action with the resume path advertised in
+                # available_file_paths.
+                _ = UploadFileAction  # imported solely for upstream parity / type ref
+                return f"Resume PDF ready at {resume_path} — call upload_file_to_element with this exact path."
 
         agent = Agent(
             task=task_prompt,
@@ -356,6 +364,19 @@ _SUCCESS_CUE_PATTERNS = (
 
 def _extract_status(payload: dict[str, Any], mode: ApplyRunMode) -> str:
     indicated = str(payload.get("status") or "").strip().casefold()
+    summary = str(payload.get("summary") or payload.get("final_result") or "").casefold()
+
+    # Hard-blocker keywords always win, regardless of an optimistic status field.
+    if "captcha" in summary or "blocker" in summary or "login wall" in summary:
+        return "failed"
+
+    # If the summary contradicts an optimistic "submitted"/"success" status
+    # field (e.g. payload claims "submitted" but the agent's prose says
+    # "never submitted" / "failed to submit"), the negation wins.
+    summary_negated = any(pattern.search(summary) for pattern in _NEGATED_SUBMIT_PATTERNS)
+    if summary_negated:
+        return "failed"
+
     if indicated in {"success", "submitted", "completed"}:
         return "success" if mode == ApplyRunMode.AUTO_SUBMIT else "needs_review"
     if indicated in {"needs_review", "paused", "stopped"}:
@@ -363,14 +384,6 @@ def _extract_status(payload: dict[str, Any], mode: ApplyRunMode) -> str:
     if indicated in {"failed", "error"}:
         return "failed"
 
-    summary = str(payload.get("summary") or payload.get("final_result") or "").casefold()
-    if "captcha" in summary or "blocker" in summary or "login wall" in summary:
-        return "failed"
-
-    # Free-text fallback. Check negation first so "not submitted" / "failed to
-    # submit" don't get treated as success.
-    if any(pattern.search(summary) for pattern in _NEGATED_SUBMIT_PATTERNS):
-        return "failed"
     if any(pattern.search(summary) for pattern in _SUCCESS_CUE_PATTERNS):
         return "success" if mode == ApplyRunMode.AUTO_SUBMIT else "needs_review"
 
