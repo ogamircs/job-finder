@@ -150,8 +150,22 @@ class SavedJobRecord(BaseModel):
     match: ScoredJobMatch
     created_at: str = ""
     updated_at: str = ""
+    application_status: str = ""
+    application_run_id: str = ""
+    application_run_path: str = ""
+    last_applied_at: str = ""
+    application_error: str = ""
 
-    @field_validator("created_at", "updated_at", mode="before")
+    @field_validator(
+        "created_at",
+        "updated_at",
+        "application_status",
+        "application_run_id",
+        "application_run_path",
+        "last_applied_at",
+        "application_error",
+        mode="before",
+    )
     @classmethod
     def _clean_saved_job_timestamps(cls, value: Any) -> str:
         return str(value or "").strip()
@@ -214,3 +228,127 @@ class GeneratedApplicationArtifacts(BaseModel):
     @classmethod
     def _clean_artifact_fields(cls, value: Any) -> str:
         return str(value or "").strip()
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().casefold()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off", ""}:
+        return False
+    return False
+
+
+def _coerce_optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    # A bool is not a meaningful integer answer for fields like salary or notice
+    # period — refuse it instead of silently becoming 0/1.
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_optional_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_str_dict(value: Any) -> dict[str, str]:
+    if value is None or value == "":
+        return {}
+    if isinstance(value, dict):
+        cleaned: dict[str, str] = {}
+        for key, raw in value.items():
+            key_text = str(key).strip()
+            if not key_text:
+                continue
+            cleaned[key_text] = str(raw or "").strip()
+        return cleaned
+    return {}
+
+
+class ApplicantProfile(BaseModel):
+    full_name: str = ""
+    email: str = ""
+    phone: str = ""
+    location_city: str = ""
+    location_region: str = ""
+    location_country: str = ""
+    postal_code: str = ""
+    work_authorization: str = ""
+    requires_sponsorship: bool = False
+    willing_to_relocate: bool = False
+    salary_expectation_min: int | None = None
+    salary_expectation_max: int | None = None
+    salary_currency: str = "USD"
+    linkedin_url: str = ""
+    github_url: str = ""
+    portfolio_url: str = ""
+    years_experience_override: float | None = None
+    preferred_pronouns: str = ""
+    desired_start_date: str = ""
+    notice_period_weeks: int | None = None
+    default_cover_letter_signoff: str = ""
+    extra_answers: dict[str, str] = Field(default_factory=dict)
+    demographics: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator(
+        "full_name",
+        "email",
+        "phone",
+        "location_city",
+        "location_region",
+        "location_country",
+        "postal_code",
+        "work_authorization",
+        "salary_currency",
+        "linkedin_url",
+        "github_url",
+        "portfolio_url",
+        "preferred_pronouns",
+        "desired_start_date",
+        "default_cover_letter_signoff",
+        mode="before",
+    )
+    @classmethod
+    def _clean_applicant_text(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+    @field_validator("requires_sponsorship", "willing_to_relocate", mode="before")
+    @classmethod
+    def _clean_applicant_bool(cls, value: Any) -> bool:
+        return _coerce_bool(value)
+
+    @field_validator(
+        "salary_expectation_min",
+        "salary_expectation_max",
+        "notice_period_weeks",
+        mode="before",
+    )
+    @classmethod
+    def _clean_applicant_optional_int(cls, value: Any) -> int | None:
+        return _coerce_optional_int(value)
+
+    @field_validator("years_experience_override", mode="before")
+    @classmethod
+    def _clean_applicant_optional_float(cls, value: Any) -> float | None:
+        return _coerce_optional_float(value)
+
+    @field_validator("extra_answers", "demographics", mode="before")
+    @classmethod
+    def _clean_applicant_dict(cls, value: Any) -> dict[str, str]:
+        return _coerce_str_dict(value)

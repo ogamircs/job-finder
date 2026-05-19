@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import html
+import json
+from pathlib import Path
 from typing import Any
 
 import gradio as gr
@@ -8,9 +10,19 @@ import pandas as pd
 from openai import OpenAI
 
 from .application_documents import ApplicationArtifactsService
+from .auto_apply import ApplyRunMode, ApplyRunResult, AutoApplyRunner
 from .job_provider import SerpApiGoogleJobsProvider
 from .matching import build_search_queries, find_job_matches
-from .models import CandidateProfile, ResumeOption, SavedJobRecord, ScoredJobMatch, SearchRequest, SearchRunResult
+from .models import (
+    ApplicantProfile,
+    CandidateProfile,
+    GeneratedApplicationArtifacts,
+    ResumeOption,
+    SavedJobRecord,
+    ScoredJobMatch,
+    SearchRequest,
+    SearchRunResult,
+)
 from .resume_sources import (
     DEFAULT_RXRESUME_RESUMES_URL,
     ensure_candidate_profile_has_signal,
@@ -832,6 +844,7 @@ class JobMatchService:
         matcher=find_job_matches,
         workspace: LocalWorkspace | None = None,
         application_artifacts_service: ApplicationArtifactsService | None = None,
+        auto_apply_runner: AutoApplyRunner | None = None,
     ) -> None:
         self.pdf_loader = pdf_loader
         self.rxresume_options_loader = rxresume_options_loader
@@ -840,6 +853,7 @@ class JobMatchService:
         self.matcher = matcher
         self.workspace = workspace or LocalWorkspace()
         self.application_artifacts_service = application_artifacts_service or ApplicationArtifactsService()
+        self.auto_apply_runner = auto_apply_runner or AutoApplyRunner()
 
     def _resolve_secret(self, env_var: str, value: str = "") -> str:
         return self.workspace.resolve_value(env_var, value)
@@ -1058,6 +1072,56 @@ class JobMatchService:
             "cover_letter_path": artifacts.cover_letter_path,
         }
 
+    def run_auto_apply(
+        self,
+        *,
+        rxresume_base_url: str,
+        rxresume_api_key: str,
+        rxresume_resume_id: str,
+        candidate_profile: CandidateProfile | dict[str, Any],
+        applicant_profile: ApplicantProfile | dict[str, Any],
+        match: ScoredJobMatch | dict[str, Any],
+        mode: ApplyRunMode | str,
+        openai_api_key: str = "",
+        openai_model: str = "",
+    ) -> tuple[GeneratedApplicationArtifacts, ApplyRunResult]:
+        resolved_openai_key = self._resolve_secret("OPENAI_API_KEY", openai_api_key)
+        resolved_openai_model = self._resolve_openai_model(openai_model)
+        resolved_base_url = self._resolve_rxresume_base_url(rxresume_base_url)
+        resolved_api_key = self._resolve_secret("RX_RESUME_API_KEY", rxresume_api_key)
+        if not resolved_openai_key:
+            raise ValueError("Provide an OpenAI API key during setup or in .env.")
+        if not resolved_api_key:
+            raise ValueError("Provide a Reactive Resume API key during setup or in .env.")
+        if not rxresume_resume_id.strip():
+            raise ValueError("Select a Reactive Resume entry before auto-applying.")
+
+        scored_match = ScoredJobMatch.model_validate(match)
+        if not scored_match.job.apply_url.strip():
+            raise ValueError("This job has no apply URL to drive an auto-apply against.")
+
+        applicant = ApplicantProfile.model_validate(applicant_profile)
+
+        artifacts = self.application_artifacts_service.generate_application_artifacts(
+            rxresume_base_url=resolved_base_url,
+            rxresume_api_key=resolved_api_key,
+            base_resume_id=rxresume_resume_id.strip(),
+            scored_job=scored_match,
+            openai_api_key=resolved_openai_key,
+            openai_model=resolved_openai_model,
+            candidate_profile=candidate_profile,
+        )
+        result = self.auto_apply_runner.run(
+            match=scored_match,
+            artifacts=artifacts,
+            profile=applicant,
+            mode=ApplyRunMode(mode) if not isinstance(mode, ApplyRunMode) else mode,
+            openai_api_key=resolved_openai_key,
+            openai_model=resolved_openai_model,
+            output_dir=Path(artifacts.artifact_dir),
+        )
+        return artifacts, result
+
 
 class AppController:
     def __init__(
@@ -1224,6 +1288,109 @@ class AppController:
             ),
         )
         payload["deleted"] = deleted
+        return payload
+
+    def current_applicant_profile(self) -> dict[str, Any]:
+        return self.workspace.load_applicant_profile().model_dump()
+
+    def save_applicant_profile(self, values: dict[str, Any]) -> dict[str, Any]:
+        profile = ApplicantProfile.model_validate(values or {})
+        saved = self.workspace.save_applicant_profile(profile)
+        return {"profile": saved.model_dump(), "status": "Applicant profile saved."}
+
+    def auto_apply_saved_job(
+        self,
+        saved_job_id: int | None,
+        *,
+        mode: str = "attended",
+        rxresume_base_url: str = "",
+        rxresume_api_key: str = "",
+        rxresume_resume_id: str = "",
+        candidate_profile: CandidateProfile | dict[str, Any] | None = None,
+        openai_api_key: str = "",
+        openai_model: str = "",
+    ) -> dict[str, Any]:
+        if saved_job_id is None:
+            payload = self._saved_jobs_payload(status="Select a saved job before auto-applying.")
+            payload["apply_result"] = None
+            return payload
+
+        existing = self.saved_jobs_store.get_job(int(saved_job_id))
+        if existing is None:
+            payload = self._saved_jobs_payload(status="The selected saved job no longer exists.")
+            payload["apply_result"] = None
+            return payload
+
+        applicant = self.workspace.load_applicant_profile()
+        if not applicant.full_name or not applicant.email:
+            payload = self._saved_jobs_payload(
+                status="Fill in at least full name and email in the Applicant profile before auto-applying.",
+                selected_saved_job_id=existing.id,
+            )
+            payload["apply_result"] = None
+            return payload
+
+        if candidate_profile is None:
+            payload = self._saved_jobs_payload(
+                status="Analyze a resume before auto-applying so the agent has candidate context.",
+                selected_saved_job_id=existing.id,
+            )
+            payload["apply_result"] = None
+            return payload
+
+        try:
+            artifacts, result = self.service.run_auto_apply(
+                rxresume_base_url=rxresume_base_url,
+                rxresume_api_key=rxresume_api_key,
+                rxresume_resume_id=rxresume_resume_id,
+                candidate_profile=candidate_profile,
+                applicant_profile=applicant,
+                match=existing.match,
+                mode=mode,
+                openai_api_key=openai_api_key,
+                openai_model=openai_model,
+            )
+        except Exception as exc:
+            error_text = f"{type(exc).__name__}: {exc}"
+            # Persist failure so the row reflects the latest run instead of
+            # showing a stale "success"/"needs_review" from a previous attempt.
+            self.saved_jobs_store.update_application_status(
+                existing.id,
+                status="failed",
+                run_id="",
+                run_path="",
+                last_applied_at="",
+                error=error_text,
+            )
+            payload = self._saved_jobs_payload(
+                status=f"Auto-apply failed: {exc}",
+                selected_saved_job_id=existing.id,
+            )
+            payload["apply_result"] = None
+            return payload
+
+        updated = self.saved_jobs_store.update_application_status(
+            existing.id,
+            status=result.status,
+            run_id=result.run_id,
+            run_path=result.run_dir,
+            last_applied_at=result.finished_at or result.started_at,
+            error=result.error,
+        )
+        status_text = {
+            "success": f"Auto-apply submitted for {existing.match.job.company}.",
+            "needs_review": f"Auto-apply paused for review — open the browser to finish for {existing.match.job.company}.",
+            "failed": f"Auto-apply failed for {existing.match.job.company}: {result.error or 'unknown error'}.",
+            "skipped": f"Auto-apply skipped for {existing.match.job.company}.",
+        }.get(result.status, f"Auto-apply finished for {existing.match.job.company}.")
+
+        payload = self._saved_jobs_payload(
+            status=status_text,
+            selected_saved_job_id=existing.id,
+        )
+        payload["apply_result"] = result.model_dump()
+        payload["artifacts"] = artifacts.model_dump()
+        payload["saved_job"] = updated.model_dump() if updated is not None else existing.model_dump()
         return payload
 
     def complete_setup(
@@ -3403,6 +3570,7 @@ def build_app(
             ),
             gr.update(visible=current_delete_confirm and record is not None and not current_edit_mode),
             gr.update(interactive=record is not None and not current_edit_mode),
+            gr.update(interactive=record is not None and not current_edit_mode),
             gr.update(visible=current_edit_mode),
             record.match.job.provider if record is not None else "",
             record.match.job.provider_job_id if record is not None else "",
@@ -3424,6 +3592,8 @@ def build_app(
             gr.update(value=cover_letter_path or None, visible=bool(cover_letter_path)),
             current_edit_mode,
             current_delete_confirm,
+            gr.update(value="", visible=False),
+            gr.update(value="", visible=False),
         )
 
     initial_drafts = normalize_source_drafts(None)
@@ -4413,6 +4583,111 @@ def build_app(
             cover_letter_path=result.get("cover_letter_path", ""),
         )
 
+    def _safe_json_object(raw_text: str) -> dict[str, str]:
+        text = (raw_text or "").strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        return {str(key): str(value or "") for key, value in parsed.items()}
+
+    def save_applicant_profile_ui(
+        full_name: str,
+        email: str,
+        phone: str,
+        preferred_pronouns: str,
+        location_city: str,
+        location_region: str,
+        location_country: str,
+        postal_code: str,
+        work_authorization: str,
+        requires_sponsorship: bool,
+        willing_to_relocate: bool,
+        salary_expectation_min: Any,
+        salary_expectation_max: Any,
+        salary_currency: str,
+        linkedin_url: str,
+        github_url: str,
+        portfolio_url: str,
+        years_experience_override: Any,
+        notice_period_weeks: Any,
+        desired_start_date: str,
+        default_cover_letter_signoff: str,
+        extra_answers_json: str,
+        demographics_json: str,
+    ) -> dict[str, Any]:
+        payload = {
+            "full_name": full_name,
+            "email": email,
+            "phone": phone,
+            "preferred_pronouns": preferred_pronouns,
+            "location_city": location_city,
+            "location_region": location_region,
+            "location_country": location_country,
+            "postal_code": postal_code,
+            "work_authorization": work_authorization,
+            "requires_sponsorship": requires_sponsorship,
+            "willing_to_relocate": willing_to_relocate,
+            "salary_expectation_min": salary_expectation_min,
+            "salary_expectation_max": salary_expectation_max,
+            "salary_currency": salary_currency,
+            "linkedin_url": linkedin_url,
+            "github_url": github_url,
+            "portfolio_url": portfolio_url,
+            "years_experience_override": years_experience_override,
+            "notice_period_weeks": notice_period_weeks,
+            "desired_start_date": desired_start_date,
+            "default_cover_letter_signoff": default_cover_letter_signoff,
+            "extra_answers": _safe_json_object(extra_answers_json),
+            "demographics": _safe_json_object(demographics_json),
+        }
+        result = controller.save_applicant_profile(payload)
+        return gr.update(value=result["status"], visible=True)
+
+    def auto_apply_saved_job_ui(
+        selected_saved_job_id: int | None,
+        apply_mode: str,
+        candidate_profile: dict[str, Any] | None,
+        rxresume_resume_id: str,
+        openai_model: str,
+        rxresume_base_url: str,
+    ) -> tuple[Any, ...]:
+        result = controller.auto_apply_saved_job(
+            selected_saved_job_id,
+            mode=apply_mode or "attended",
+            rxresume_base_url=rxresume_base_url or "",
+            rxresume_api_key="",
+            rxresume_resume_id=rxresume_resume_id or "",
+            candidate_profile=candidate_profile,
+            openai_api_key="",
+            openai_model=openai_model or "",
+        )
+        status_text = result.get("status", "")
+        apply_result = result.get("apply_result") or {}
+        run_dir = str(apply_result.get("run_dir") or "")
+        status_lines = [status_text] if status_text else []
+        if apply_result:
+            mode_label = apply_result.get("mode", "")
+            run_status = apply_result.get("status", "")
+            status_lines.append(f"**Mode:** {mode_label}  •  **Result:** {run_status}")
+            if apply_result.get("final_url"):
+                status_lines.append(f"Final URL: {apply_result['final_url']}")
+            if apply_result.get("error"):
+                status_lines.append(f"Error: {apply_result['error']}")
+        status_markdown = "\n\n".join(line for line in status_lines if line)
+        return (
+            saved_jobs_frame_from_state(result.get("saved_jobs_state", [])),
+            result.get("saved_jobs_state", []),
+            _status_html(status_text),
+            status_text,
+            gr.update(value=status_markdown, visible=bool(status_markdown)),
+            gr.update(value=run_dir, visible=bool(run_dir)),
+        )
+
     with gr.Blocks(title="Resume to Jobs Finder", css=APP_CSS) as demo:
         with gr.Group(visible=controller.setup_required()) as setup_group:
             gr.Markdown("# Resume to Jobs Finder")
@@ -4503,6 +4778,85 @@ def build_app(
                         value=settings_values["rxresume_api_url"],
                         placeholder=DEFAULT_RXRESUME_RESUMES_URL,
                     )
+                applicant_profile_values = controller.current_applicant_profile()
+                with gr.Accordion("Applicant profile (for Auto-apply)", open=False):
+                    gr.Markdown(
+                        '<p class="workspace-copy">Used by the Auto-apply browser agent. Full name and email are required.</p>'
+                    )
+                    with gr.Row():
+                        applicant_full_name = gr.Textbox(label="Full name", value=applicant_profile_values.get("full_name", ""))
+                        applicant_email = gr.Textbox(label="Email", value=applicant_profile_values.get("email", ""))
+                    with gr.Row():
+                        applicant_phone = gr.Textbox(label="Phone", value=applicant_profile_values.get("phone", ""))
+                        applicant_preferred_pronouns = gr.Textbox(label="Preferred pronouns", value=applicant_profile_values.get("preferred_pronouns", ""))
+                    with gr.Row():
+                        applicant_location_city = gr.Textbox(label="City", value=applicant_profile_values.get("location_city", ""))
+                        applicant_location_region = gr.Textbox(label="State/Region", value=applicant_profile_values.get("location_region", ""))
+                        applicant_location_country = gr.Textbox(label="Country", value=applicant_profile_values.get("location_country", ""))
+                        applicant_postal_code = gr.Textbox(label="Postal code", value=applicant_profile_values.get("postal_code", ""))
+                    with gr.Row():
+                        applicant_work_authorization = gr.Textbox(
+                            label="Work authorization",
+                            value=applicant_profile_values.get("work_authorization", ""),
+                            placeholder="US Citizen, H-1B, etc.",
+                        )
+                        applicant_requires_sponsorship = gr.Checkbox(
+                            label="Requires sponsorship",
+                            value=bool(applicant_profile_values.get("requires_sponsorship", False)),
+                        )
+                        applicant_willing_to_relocate = gr.Checkbox(
+                            label="Willing to relocate",
+                            value=bool(applicant_profile_values.get("willing_to_relocate", False)),
+                        )
+                    with gr.Row():
+                        applicant_salary_expectation_min = gr.Number(
+                            label="Salary min",
+                            value=applicant_profile_values.get("salary_expectation_min"),
+                            precision=0,
+                        )
+                        applicant_salary_expectation_max = gr.Number(
+                            label="Salary max",
+                            value=applicant_profile_values.get("salary_expectation_max"),
+                            precision=0,
+                        )
+                        applicant_salary_currency = gr.Textbox(
+                            label="Currency",
+                            value=applicant_profile_values.get("salary_currency", "USD"),
+                        )
+                    with gr.Row():
+                        applicant_linkedin_url = gr.Textbox(label="LinkedIn URL", value=applicant_profile_values.get("linkedin_url", ""))
+                        applicant_github_url = gr.Textbox(label="GitHub URL", value=applicant_profile_values.get("github_url", ""))
+                        applicant_portfolio_url = gr.Textbox(label="Portfolio URL", value=applicant_profile_values.get("portfolio_url", ""))
+                    with gr.Row():
+                        applicant_years_experience_override = gr.Number(
+                            label="Years experience (override)",
+                            value=applicant_profile_values.get("years_experience_override"),
+                        )
+                        applicant_notice_period_weeks = gr.Number(
+                            label="Notice period (weeks)",
+                            value=applicant_profile_values.get("notice_period_weeks"),
+                            precision=0,
+                        )
+                        applicant_desired_start_date = gr.Textbox(
+                            label="Desired start date",
+                            value=applicant_profile_values.get("desired_start_date", ""),
+                        )
+                    applicant_default_cover_letter_signoff = gr.Textbox(
+                        label="Cover-letter sign-off",
+                        value=applicant_profile_values.get("default_cover_letter_signoff", ""),
+                    )
+                    applicant_extra_answers_json = gr.Textbox(
+                        label="Extra answers (JSON object)",
+                        value=json.dumps(applicant_profile_values.get("extra_answers") or {}, indent=2),
+                        lines=4,
+                    )
+                    applicant_demographics_json = gr.Textbox(
+                        label="Demographics (JSON object, optional)",
+                        value=json.dumps(applicant_profile_values.get("demographics") or {}, indent=2),
+                        lines=4,
+                    )
+                    save_applicant_profile_button = gr.Button("Save applicant profile", variant="primary")
+                    applicant_profile_status = gr.Markdown(visible=False)
                 save_settings_button = gr.Button("Save settings", variant="primary")
 
             active_source_state = gr.State(value=initial_source)
@@ -4641,6 +4995,27 @@ def build_app(
                                 variant="secondary",
                                 interactive=False,
                             )
+                        with gr.Row():
+                            apply_mode_dropdown = gr.Dropdown(
+                                label="Apply mode",
+                                choices=[
+                                    ("Attended (pause before submit)", "attended"),
+                                    ("Auto-submit", "auto_submit"),
+                                ],
+                                value="attended",
+                                interactive=True,
+                            )
+                            auto_apply_button = gr.Button(
+                                "Auto-apply",
+                                variant="primary",
+                                interactive=False,
+                            )
+                        auto_apply_status = gr.Markdown(visible=False)
+                        auto_apply_artifacts_dir = gr.Textbox(
+                            label="Run artifacts directory",
+                            interactive=False,
+                            visible=False,
+                        )
                     with gr.Group(visible=False, elem_classes=["detail-card"]) as saved_job_edit_group:
                         with gr.Row():
                             saved_job_title = gr.Textbox(label="Title")
@@ -4734,6 +5109,7 @@ def build_app(
             delete_saved_job_button,
             cancel_delete_saved_job_button,
             create_saved_job_resume_button,
+            auto_apply_button,
             saved_job_edit_group,
             saved_job_provider,
             saved_job_provider_job_id,
@@ -4755,6 +5131,8 @@ def build_app(
             saved_cover_letter_download,
             saved_job_edit_mode_state,
             saved_job_delete_confirm_state,
+            auto_apply_status,
+            auto_apply_artifacts_dir,
         ]
 
         setup_source_type.change(
@@ -4842,6 +5220,37 @@ def build_app(
                 settings_rxresume_api_key,
                 settings_rxresume_api_url,
             ],
+            queue=False,
+        )
+
+        save_applicant_profile_button.click(
+            save_applicant_profile_ui,
+            inputs=[
+                applicant_full_name,
+                applicant_email,
+                applicant_phone,
+                applicant_preferred_pronouns,
+                applicant_location_city,
+                applicant_location_region,
+                applicant_location_country,
+                applicant_postal_code,
+                applicant_work_authorization,
+                applicant_requires_sponsorship,
+                applicant_willing_to_relocate,
+                applicant_salary_expectation_min,
+                applicant_salary_expectation_max,
+                applicant_salary_currency,
+                applicant_linkedin_url,
+                applicant_github_url,
+                applicant_portfolio_url,
+                applicant_years_experience_override,
+                applicant_notice_period_weeks,
+                applicant_desired_start_date,
+                applicant_default_cover_letter_signoff,
+                applicant_extra_answers_json,
+                applicant_demographics_json,
+            ],
+            outputs=[applicant_profile_status],
             queue=False,
         )
 
@@ -5227,6 +5636,26 @@ def build_app(
                 settings_rxresume_api_url,
             ],
             outputs=saved_jobs_view_outputs,
+        )
+
+        auto_apply_button.click(
+            auto_apply_saved_job_ui,
+            inputs=[
+                selected_saved_job_id_state,
+                apply_mode_dropdown,
+                candidate_profile_state,
+                rxresume_resume_id,
+                settings_openai_model,
+                settings_rxresume_api_url,
+            ],
+            outputs=[
+                saved_jobs_table,
+                saved_jobs_state,
+                saved_jobs_status,
+                saved_jobs_status_text_state,
+                auto_apply_status,
+                auto_apply_artifacts_dir,
+            ],
         )
 
         job_search_tab.select(
