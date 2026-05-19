@@ -215,23 +215,44 @@ def default_browser_agent_factory(
 ) -> Callable[[str], Any]:
     """Return a callable that runs a browser_use.Agent over the given task prompt.
 
-    Lazy-imports browser_use so this module loads without the dependency
-    installed (used by tests with a fake factory).
+    Mirrors the upstream apply_to_job example
+    (browser-use/examples/use-cases/apply_to_job.py):
+        from browser_use import Agent, Browser, ChatOpenAI, Tools
+        from browser_use.tools.views import UploadFileAction
+        llm = ChatOpenAI(model=...)
+        browser = Browser(cross_origin_iframes=True)
+        tools = Tools(); @tools.action(...) async def upload_resume(...): ...
+        agent = Agent(task=..., llm=llm, browser=browser, tools=tools,
+                      available_file_paths=[resume_path])
+        history = await agent.run(); history.final_result()
+
+    Lazy-imports browser_use so the module loads without the dependency
+    installed (tests inject a fake factory).
     """
 
     file_paths = list(available_file_paths or [])
+    resume_path = file_paths[0] if file_paths else ""
 
     def _run(task_prompt: str) -> Any:
-        from browser_use import Agent, Browser, ChatOpenAI  # type: ignore[import-not-found]
+        from browser_use import Agent, Browser, ChatOpenAI, Tools  # type: ignore[import-not-found]
+        from browser_use.tools.views import UploadFileAction  # type: ignore[import-not-found]
 
         llm = ChatOpenAI(model=openai_model, api_key=openai_api_key)
         browser = Browser(cross_origin_iframes=True, headless=headless)
         transcript_path = output_dir / "transcript.json"
 
+        tools = Tools()
+
+        if resume_path:
+            @tools.action(description="Upload the tailored resume PDF to the focused upload field")
+            async def upload_resume(browser_session):  # noqa: ANN001 - browser_use injects session
+                return UploadFileAction(path=resume_path, index=0)
+
         agent = Agent(
             task=task_prompt,
             llm=llm,
             browser=browser,
+            tools=tools,
             use_vision=True,
             available_file_paths=file_paths,
             save_conversation_path=str(transcript_path),
